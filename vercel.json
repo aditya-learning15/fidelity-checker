@@ -1,10 +1,11 @@
 {
   "buildCommand": "cd client && npm run build",
   "outputDirectory": "client/dist",
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "https://fidelity-checker-api.fly.dev/api/$1" },
-    { "source": "/feedback", "destination": "/index.html" },
-    { "source": "/history", "destination": "/index.html" },
-    { "source": "/report", "destination": "/index.html" }
+  "routes": [
+    { "src": "/api/(.*)", "dest": "https://fidelity-checker-api.fly.dev/api/$1" },
+    { "src": "/feedback$", "dest": "/index.html" },
+    { "src": "/history$", "dest": "/index.html" },
+    { "src": "/report$", "dest": "/index.html" },
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
