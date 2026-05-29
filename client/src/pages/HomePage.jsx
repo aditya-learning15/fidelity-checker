@@ -79,6 +79,7 @@ function AnalysisSettings() {
     <div className="space-y-0">
       {/* Header — always visible */}
       <button
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
         className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50 transition-colors"
       >
@@ -149,6 +150,7 @@ function AnalysisSettings() {
           >
             {THRESHOLDS.map((t, i) => (
               <button
+                type="button"
                 key={t.value}
                 onClick={() => handleThresholdChange(t.value)}
                 style={{
@@ -200,6 +202,7 @@ function NamingGuide() {
     <div className="space-y-0">
       {/* Header — always visible */}
       <button
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
         className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50 transition-colors"
       >
