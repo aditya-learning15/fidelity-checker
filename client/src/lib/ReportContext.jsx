@@ -1,6 +1,5 @@
 import { createContext, useContext, useState } from 'react'
 import apiClient from './apiClient.js'
-import { saveToHistory } from './historyService.js'
 
 const ReportContext = createContext(null)
 

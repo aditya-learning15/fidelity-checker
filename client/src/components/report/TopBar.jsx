@@ -1,7 +1,5 @@
-import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useReport } from '../../lib/ReportContext.jsx'
-import { getHistoryCount } from '../../lib/historyService.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -42,9 +40,8 @@ function ArrowLeftIcon() {
  * }} props
  */
 export default function TopBar({ score, onExport, exportLabel, exportDisabled, onShare, shareLabel }) {
-  const navigate   = useNavigate()
+  const navigate = useNavigate()
   const { setReport } = useReport()
-  const historyCount = getHistoryCount()
 
   const handleBack = () => {
     setReport(null)
@@ -56,7 +53,7 @@ export default function TopBar({ score, onExport, exportLabel, exportDisabled, o
       className="flex-shrink-0 flex items-center justify-between border-b border-gray-200 bg-white px-4"
       style={{ height: '44px', zIndex: 20 }}
     >
-      {/* ── Left — back link + history ── */}
+      {/* ── Left — back link ── */}
       <div className="flex items-center gap-4">
         <button
           onClick={handleBack}
@@ -65,73 +62,6 @@ export default function TopBar({ score, onExport, exportLabel, exportDisabled, o
           <ArrowLeftIcon />
           New analysis
         </button>
-
-        <a
-          href="/history"
-          style={{
-            fontSize: '12px',
-            color: 'var(--color-text-secondary)',
-            textDecoration: 'none',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 5
-          }}
-        >
-          <svg
-            style={{ fontSize: 14, width: 14, height: 14 }}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-          >
-            <circle cx="12" cy="12" r="10" />
-            <polyline points="12 6 12 12 16 14" />
-          </svg>
-          History
-          {historyCount > 0 && (
-            <span style={{
-              background: '#534AB7',
-              color: '#fff',
-              fontSize: 9,
-              fontWeight: 700,
-              width: 16,
-              height: 16,
-              borderRadius: '50%',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              lineHeight: 1
-            }}>
-              {historyCount > 9 ? '9+' : historyCount}
-            </span>
-          )}
-        </a>
-
-        {historyCount > 0 && (
-          <a
-            href="/feedback"
-            style={{
-              fontSize: '12px',
-              color: 'var(--color-text-secondary)',
-              textDecoration: 'none',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 5
-            }}
-          >
-            <svg
-              style={{ fontSize: 14, width: 14, height: 14 }}
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path d="M3 3v7a7 7 0 1 0 14 0V3" />
-              <path d="M9 11l3 3 5-5" />
-            </svg>
-            Feedback
-          </a>
-        )}
       </div>
 
       {/* ── Right — score + actions ── */}
