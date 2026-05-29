@@ -1,20 +1,10 @@
 {
   "buildCommand": "cd client && npm run build",
   "outputDirectory": "client/dist",
-  "regions": ["sin"],
-  "functions": {
-    "api/**": {
-      "runtime": "nodejs18.x"
-    }
-  },
   "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "https://fidelity-checker-api.fly.dev/api/$1"
-    },
-    {
-      "source": "/(?!api)",
-      "destination": "/index.html"
-    }
+    { "source": "/api/(.*)", "destination": "https://fidelity-checker-api.fly.dev/api/$1" },
+    { "source": "/feedback", "destination": "/index.html" },
+    { "source": "/history", "destination": "/index.html" },
+    { "source": "/report", "destination": "/index.html" }
   ]
 }
