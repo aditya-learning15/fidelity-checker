@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import apiClient from '../lib/apiClient.js'
 import { useReport } from '../lib/ReportContext.jsx'
-import { saveToHistory, getHistoryCount } from '../lib/historyService.js'
 import { getConfidenceThreshold, setPreference } from '../lib/preferencesService.js'
 import AnalysisLoader from '../components/AnalysisLoader.jsx'
 
@@ -688,7 +687,6 @@ export default function HomePage() {
 
       const { data } = await apiClient.post('/api/analyze', form)
       setReport(data)
-      saveToHistory(data)
       setAnalysisInputs(figmaUrl.trim(), figmaToken.trim())
       navigate('/report')
     } catch (err) {
@@ -704,63 +702,6 @@ export default function HomePage() {
     <>
     <AnalysisLoader visible={loading} />
     <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center px-4 py-16 relative">
-      {getHistoryCount() > 0 && (
-        <div style={{
-          position: 'absolute',
-          top: 16,
-          right: 16,
-          display: 'flex',
-          gap: 16
-        }}>
-          <a
-            href="/history"
-            style={{
-              fontSize: '12px',
-              color: 'var(--color-text-secondary)',
-              textDecoration: 'none',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4
-            }}
-          >
-            <svg
-              style={{ fontSize: 14, width: 14, height: 14 }}
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <circle cx="12" cy="12" r="10" />
-              <polyline points="12 6 12 12 16 14" />
-            </svg>
-            History
-          </a>
-
-          <a
-            href="/feedback"
-            style={{
-              fontSize: '12px',
-              color: 'var(--color-text-secondary)',
-              textDecoration: 'none',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4
-            }}
-          >
-            <svg
-              style={{ fontSize: 14, width: 14, height: 14 }}
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path d="M3 3v7a7 7 0 1 0 14 0V3" />
-              <path d="M9 11l3 3 5-5" />
-            </svg>
-            Feedback
-          </a>
-        </div>
-      )}
 
       <div className="w-full max-w-[680px]">
 

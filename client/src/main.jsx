@@ -6,8 +6,6 @@ import { ReportProvider } from './lib/ReportContext.jsx'
 import MobileNudge from './components/MobileNudge.jsx'
 import HomePage from './pages/HomePage.jsx'
 import ReportPage from './pages/ReportPage.jsx'
-import HistoryPage from './pages/HistoryPage.jsx'
-import FeedbackPage from './pages/FeedbackPage.jsx'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
@@ -17,8 +15,6 @@ ReactDOM.createRoot(document.getElementById('root')).render(
         <Routes>
           <Route path="/"        element={<HomePage />} />
           <Route path="/report"  element={<ReportPage />} />
-          <Route path="/history" element={<HistoryPage />} />
-          <Route path="/feedback" element={<FeedbackPage />} />
         </Routes>
       </ReportProvider>
     </BrowserRouter>
