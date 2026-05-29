@@ -1,0 +1,8 @@
+.env
+node_modules/
+src/data/feedback.json
+src/tests/figma-sample.json
+src/tests/dom-sample.json
+dist/
+*.log
+.DS_Store

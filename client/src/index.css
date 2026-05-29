@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@keyframes issueCardIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+
+.issue-card-animate {
+  opacity: 0;
+  animation: issueCardIn 0.25s ease forwards;
+}
+
+/* Annotation rectangle pulse when an issue is active */
+@keyframes annotationPulse {
+  0%, 100% { box-shadow: 0 0 0 0   rgba(99, 102, 241, 0.6); }
+  60%       { box-shadow: 0 0 0 8px rgba(99, 102, 241, 0);   }
+}
+
+.annotation-pulse {
+  animation: annotationPulse 1.5s ease-in-out infinite;
+}

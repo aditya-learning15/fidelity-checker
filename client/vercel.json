@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://fidelity-checker-api.fly.dev/api/$1"
+    }
+  ]
+}
