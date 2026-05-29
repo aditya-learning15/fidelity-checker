@@ -5,7 +5,7 @@
       "destination": "https://fidelity-checker-api.fly.dev/api/$1"
     },
     {
-      "source": "/(.*)",
+      "source": "/(?!.*\\.)",
       "destination": "/index.html"
     }
   ]
