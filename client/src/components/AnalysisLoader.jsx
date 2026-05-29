@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react'
 
 const STEPS = [
   'Fetching your Figma design...',
-  'Comparing layouts...',
-  'Running AI analysis...',
+  'Exporting frame as image...',
+  'Comparing layouts pixel by pixel...',
+  'Running AI element matching...',
   'Calculating fidelity score...',
 ]
 
@@ -22,10 +23,11 @@ export default function AnalysisLoader({ visible }) {
       return
     }
 
-    // Show each step with a 1.5 s delay between them.
-    // Step 0 appears immediately (delay = 0).
+    // Steps appear progressively — first 3 fast (Figma fetch ~30s each),
+    // then slower to reflect AI analysis phase (can take 60-90s).
+    const delays = [0, 20000, 50000, 90000, 150000]
     const timers = STEPS.map((_, i) =>
-      setTimeout(() => setActiveStep(i), i * 1500)
+      setTimeout(() => setActiveStep(i), delays[i])
     )
 
     return () => timers.forEach(clearTimeout)
@@ -58,8 +60,11 @@ export default function AnalysisLoader({ visible }) {
           </svg>
         </div>
 
-        <p className="mb-5 text-center text-sm font-semibold text-gray-800">
+        <p className="mb-1 text-center text-sm font-semibold text-gray-800">
           Analysing design fidelity…
+        </p>
+        <p className="mb-5 text-center text-xs text-gray-400">
+          This may take 2–3 minutes
         </p>
 
         {/* Step list */}
