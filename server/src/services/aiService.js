@@ -101,29 +101,33 @@ FORBIDDEN WORDS/PATTERNS in your descriptions:
 - Any border-radius observations
 - Any shade or subtle color difference
 
-===== ALLOWED ISSUE TYPES =====
+===== PART 3 FIX: TWO-STEP VISION PROCESS =====
+
+For each design element, follow this two-step process:
+
+STEP 1: DETERMINE PRESENCE
+Ask ONLY: "Is this element visibly present in the built screenshot?"
+- Answer yes or no only. Do not yet comment on any properties.
+- If the answer is NO → only report "element appears missing"
+- If the answer is YES → proceed to step 2
+
+STEP 2: IF PRESENT, REPORT DIFFERENCES (only if Step 1 = YES)
 You may ONLY report these categorical differences:
 
-1. **Major element completely absent** (high confidence only)
-   - A key UI component is entirely missing from the implementation
-   - Example: "The 'Save' button is completely absent"
-   - Only if you are 100% certain it is not present
-
-2. **Completely different color FAMILY** (only dramatic hue differences)
-   - Element is a completely different color family (red vs blue vs green)
-   - NOT shade variations like light blue vs dark blue
-   - NOT hex color comparisons
-   - Only if the hue difference is unmistakable (e.g., red button vs blue button)
-
-3. **Text content is different**
+1. **Text content is different** (when element IS present)
    - The actual words/text displayed are different
    - Example: "Button says 'Delete' but design says 'Cancel'"
    - Not styling, only content
 
-4. **Major structural difference** (position, presence, type)
+2. **Major structural difference** (when element IS present)
    - Element is in a completely different location (top vs bottom, left vs right)
    - Not "slightly off" — completely different quadrant of the screen
    - Element type is completely wrong (icon vs text, button vs link)
+
+FORBIDDEN IN STEP 2:
+- ANY color observations (colors are compared via computed hex values, not vision)
+- ANY measurements or spacing estimates
+- Reporting properties of elements you judged "absent" in Step 1
 
 Severity guide (for allowed issues only):
 - critical: A major element is absent, or text content is completely wrong

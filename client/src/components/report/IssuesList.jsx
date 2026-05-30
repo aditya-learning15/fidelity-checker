@@ -175,16 +175,48 @@ function IssueCard({ issue, isActive, onIssueClick, cardRefCallback, index = 0 }
         </div>
       </div>
 
-      {/* Description */}
-      <p className={`text-sm leading-relaxed mb-2 ${
-        isAccepted
-          ? 'text-gray-500 line-through'
-          : isFlagged
-          ? 'text-gray-800 italic'
-          : 'text-gray-800'
-      }`}>
-        {issue.description}
-      </p>
+      {/* Description + Evidence */}
+      <div className="mb-2">
+        <p className={`text-sm leading-relaxed mb-2 ${
+          isAccepted
+            ? 'text-gray-500 line-through'
+            : isFlagged
+            ? 'text-gray-800 italic'
+            : 'text-gray-800'
+        }`}>
+          {issue.description}
+        </p>
+
+        {/* PART 4 FIX: Show evidence for different issue types */}
+
+        {/* Color swatches for color issues */}
+        {issue.category === 'color' && issue.figmaValue && issue.domValue && (
+          <div className="flex items-center gap-2 text-xs text-gray-600 mb-2">
+            <div className="flex items-center gap-1.5">
+              <div
+                className="w-3 h-3 rounded border border-gray-300"
+                style={{ backgroundColor: issue.figmaValue }}
+                title={issue.figmaValue}
+              />
+              <span className="font-mono text-xs">{issue.figmaValue}</span>
+              <span className="text-gray-400">→</span>
+              <div
+                className="w-3 h-3 rounded border border-gray-300"
+                style={{ backgroundColor: issue.domValue }}
+                title={issue.domValue}
+              />
+              <span className="font-mono text-xs">{issue.domValue}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Verify tag for presence issues (visual check) */}
+        {issue.description?.includes('visual check — please verify') && (
+          <div className="inline-block px-2 py-1 bg-orange-50 border border-orange-200 rounded text-xs text-orange-700 font-medium">
+            ⚠️ Verify
+          </div>
+        )}
+      </div>
 
       {/* Suggestion */}
       {issue.suggestion && (

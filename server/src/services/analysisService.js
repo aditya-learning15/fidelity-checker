@@ -7,6 +7,67 @@ import { detectVirtualScrollComponents, matchElements } from './matchService.js'
 import { loadFeedbackPatterns, applyFeedbackFilters } from './feedbackService.js'
 
 // ---------------------------------------------------------------------------
+// Evidence-based filtering
+// ---------------------------------------------------------------------------
+
+/**
+ * PART 1 FIX: Filter issues without concrete evidence.
+ * Every issue in the report must cite specific values from Figma and/or computed styles.
+ *
+ * Allowed to remain:
+ * - Arithmetic issues: figmaValue AND domValue both present and specific
+ * - Color issues: both Figma hex AND computed hex (no vision-only color claims)
+ * - Presence issues: only high confidence, with "(visual check — please verify)" qualifier
+ *
+ * @param {object[]} issues - All issues from analysis
+ * @returns {object[]} Filtered issues with evidence
+ */
+function filterIssuesWithoutEvidence(issues) {
+  return issues.filter(issue => {
+    // Presence/absence issues (vision-only, no exact values)
+    if (issue.category === 'layout' && issue.description?.includes('missing')) {
+      // Only keep if high confidence, and mark as unverified
+      if (issue.confidence === 'high') {
+        // Add qualifier if not already present
+        if (!issue.description.includes('visual check')) {
+          issue.description = `${issue.description} (visual check — please verify)`
+        }
+        return true
+      }
+      // Drop medium/low confidence presence claims
+      return false
+    }
+
+    // Color issues: must have both figmaValue AND domValue (computed hex)
+    if (issue.category === 'color') {
+      const hasFigmaHex = issue.figmaValue && /^#[0-9A-Fa-f]{6}$/.test(issue.figmaValue)
+      const hasDomHex = issue.domValue && /^#[0-9A-Fa-f]{6}$/.test(issue.domValue)
+
+      if (hasFigmaHex && hasDomHex) {
+        return true  // Has both hex codes — keep it
+      }
+
+      // No computed hex evidence — drop color issue
+      return false
+    }
+
+    // Arithmetic issues (typography, spacing, etc.): must have both values
+    if (issue.figmaValue != null && issue.domValue != null) {
+      // Check if values are specific (not vague like "light grey")
+      const figmaIsSpecific = issue.figmaValue !== '' && issue.figmaValue !== null
+      const domIsSpecific = issue.domValue !== '' && issue.domValue !== null
+
+      if (figmaIsSpecific && domIsSpecific) {
+        return true  // Has both concrete values
+      }
+    }
+
+    // No evidence — drop it
+    return false
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Score computation
 // ---------------------------------------------------------------------------
 
@@ -246,13 +307,24 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
 
   // --- Score aggregation ---
   // Flatten all issues and pass to score computation for deterministic calculation
-  const allIssues = Object.entries(categories).flatMap(([cat, data]) =>
+  let allIssues = Object.entries(categories).flatMap(([cat, data]) =>
     (data.issues ?? []).map(issue => ({
       ...issue,
       category: cat,
     }))
   )
-  const { overallScore } = computeScores(diffResult, { ...aiResult, categories }, allIssues)
+
+  // PART 1 FIX: Filter issues without evidence before scoring and reporting
+  allIssues = filterIssuesWithoutEvidence(allIssues)
+
+  // Rebuild categories with filtered issues
+  const filteredCategories = {}
+  for (const [catName, catData] of Object.entries(categories)) {
+    const categoryIssues = allIssues.filter(issue => issue.category === catName)
+    filteredCategories[catName] = { ...catData, issues: categoryIssues }
+  }
+
+  const { overallScore } = computeScores(diffResult, { ...aiResult, categories: filteredCategories }, allIssues)
 
   // --- Extraction gap detection ---
   // If computed styles (DOM extraction) was provided, detect virtual scroll containers
@@ -290,7 +362,7 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
       pixels:  diffResult.mismatchedPixels,
       total:   diffResult.totalPixels,
     },
-    categories,
+    categories: filteredCategories,  // PART 1 FIX: only issues with evidence
     summary: aiResult.overallSummary,
     tokenDiff,    // null when no computed styles were provided
     extractionGaps,

@@ -210,11 +210,14 @@ export function computePropertyDiff(match) {
       } else {
         const colorDiff = compareColors(figmaColor, domColor)
         if (colorDiff) {
+          // PART 2 FIX: Show both hex codes in description
+          const description = `Icon fill: design ${figmaColor}, build ${domColor}`
           issues.push({
             property: 'color',
             figmaValue: figmaColor,
             domValue: domColor,
             delta: colorDiff.delta,
+            description,
             category: 'color',
             severity: colorDiff.severity,
           })
@@ -226,11 +229,14 @@ export function computePropertyDiff(match) {
       if (figmaColor && domBg) {
         const colorDiff = compareColors(figmaColor, domBg)
         if (colorDiff) {
+          // PART 2 FIX: Show both hex codes in description
+          const description = `Background color: design ${figmaColor}, build ${domBg}`
           issues.push({
             property: 'backgroundColor',
             figmaValue: figmaColor,
             domValue: domBg,
             delta: colorDiff.delta,
+            description,
             category: 'color',
             severity: colorDiff.severity,
           })
