@@ -190,22 +190,51 @@ export function computePropertyDiff(match) {
 
   console.log(`[computePropertyDiff] Comparing ${match.figmaName || 'unnamed'} (confidence: ${match.confidence})`)
 
+  // PART 2 FIX: Gate arithmetic comparisons based on data quality
+  const hasComputedStyles = match.hasComputedStyles ?? false
+  const skipSpacingComparisons = !hasComputedStyles
+
   // --- Color comparison ---
+  // PART 3 FIX: Handle VECTOR/icon elements specially
   if (figma.fills && figma.fills.length > 0) {
     const figmaColor = figma.fills[0]  // first fill
-    const domBg = dom.styles?.backgroundColor
 
-    if (figmaColor && domBg) {
-      const colorDiff = compareColors(figmaColor, domBg)
-      if (colorDiff) {
-        issues.push({
-          property: 'backgroundColor',
-          figmaValue: figmaColor,
-          domValue: domBg,
-          delta: colorDiff.delta,
-          category: 'color',
-          severity: colorDiff.severity,
-        })
+    // For vector/icon elements, compare against color/fill property, NOT backgroundColor
+    let domColor = null
+    if (figma.type === 'VECTOR') {
+      // Icons get their color from the 'color' property or fill property
+      domColor = dom.styles?.color
+      // If no color property, skip comparison (don't compare to backgroundColor for icons)
+      if (!domColor) {
+        // Icon has no color property to compare against — skip this comparison
+      } else {
+        const colorDiff = compareColors(figmaColor, domColor)
+        if (colorDiff) {
+          issues.push({
+            property: 'color',
+            figmaValue: figmaColor,
+            domValue: domColor,
+            delta: colorDiff.delta,
+            category: 'color',
+            severity: colorDiff.severity,
+          })
+        }
+      }
+    } else {
+      // Non-icon elements: compare against backgroundColor
+      const domBg = dom.styles?.backgroundColor
+      if (figmaColor && domBg) {
+        const colorDiff = compareColors(figmaColor, domBg)
+        if (colorDiff) {
+          issues.push({
+            property: 'backgroundColor',
+            figmaValue: figmaColor,
+            domValue: domBg,
+            delta: colorDiff.delta,
+            category: 'color',
+            severity: colorDiff.severity,
+          })
+        }
       }
     }
   }
@@ -277,7 +306,9 @@ export function computePropertyDiff(match) {
   }
 
   // --- Spacing: padding ---
-  for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
+  // PART 2 FIX: Only generate padding issues if we have real computed styles
+  if (!skipSpacingComparisons) {
+    for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
     const figmaProp = `padding${side}`
     const domProp = `padding${side}`
 
@@ -325,11 +356,13 @@ export function computePropertyDiff(match) {
         }
       }
     }
+    }
   }
 
   // --- Border radius ---
+  // PART 2 FIX: Skip if no computed styles available
   // BUG 2 FIX: Skip if cornerRadius >= 100 (sentinel for fully-rounded/pill shapes)
-  if (figma.cornerRadius != null && dom.styles?.borderRadius) {
+  if (!skipSpacingComparisons && figma.cornerRadius != null && dom.styles?.borderRadius) {
     const figmaRadius = parseNumberValue(figma.cornerRadius.toString())
 
     // Figma stores fully-rounded / pill-shaped corners as very large values (e.g., 999)

@@ -34,6 +34,8 @@ function buildPrompt(namedElements, tokenDiff = null, matchedElements = null) {
 Your job is to identify every visual discrepancy between the design and the \
 implementation, however small. Be precise and technical, not vague.
 
+CRITICAL: Only report issues you are HIGHLY confident about. When uncertain, do not flag.
+
 Named elements extracted from the Figma design file for reference (use these to \
 ground your issue descriptions in exact design intent):
 ${JSON.stringify(namedElements, null, 2)}`
@@ -83,21 +85,54 @@ no explanation, just the JSON:
   }
 }
 
-Severity guide:
-- critical: completely wrong, breaks design intent (wrong component, missing element, completely wrong color)
-- major: noticeably different, affects visual quality
-  • Spacing: delta > 6px
-  • Border radius: delta > 4px
-  • Font size: delta > 2px
-  • Subpixel noise (≤2px spacing, ≤1px radius, ≤2px font) is acceptable—skip reporting
-- minor: subtle but meaningful
-  • Spacing: 3–6px difference
-  • Border radius: 2–4px difference
-  • Other: slight color shade, 1–2px misalignment
+===== CRITICAL RESTRICTION =====
+You MUST NOT estimate any measurement, dimension, spacing, padding, or border-radius value.
+You cannot measure pixels from an image reliably.
+If an issue would require you to estimate a number, DO NOT report it.
+Only report differences that are CATEGORICAL and unmistakable to the human eye.
+
+FORBIDDEN WORDS/PATTERNS in your descriptions:
+- "px" or any unit (pixels, points, etc.)
+- "approximately", "appears to be", "slightly", "around", "about"
+- "less than", "more than", "taller", "shorter", "wider", "narrower"
+- "estimated", "visually", "looks like it"
+- Any measurements or spacing estimates
+- Any padding or margin estimates
+- Any border-radius observations
+- Any shade or subtle color difference
+
+===== ALLOWED ISSUE TYPES =====
+You may ONLY report these categorical differences:
+
+1. **Major element completely absent** (high confidence only)
+   - A key UI component is entirely missing from the implementation
+   - Example: "The 'Save' button is completely absent"
+   - Only if you are 100% certain it is not present
+
+2. **Completely different color FAMILY** (only dramatic hue differences)
+   - Element is a completely different color family (red vs blue vs green)
+   - NOT shade variations like light blue vs dark blue
+   - NOT hex color comparisons
+   - Only if the hue difference is unmistakable (e.g., red button vs blue button)
+
+3. **Text content is different**
+   - The actual words/text displayed are different
+   - Example: "Button says 'Delete' but design says 'Cancel'"
+   - Not styling, only content
+
+4. **Major structural difference** (position, presence, type)
+   - Element is in a completely different location (top vs bottom, left vs right)
+   - Not "slightly off" — completely different quadrant of the screen
+   - Element type is completely wrong (icon vs text, button vs link)
+
+Severity guide (for allowed issues only):
+- critical: A major element is absent, or text content is completely wrong
+- major: Completely wrong color family, major positional difference
+- minor: (rarely used — only for clear structural issues)
 
 Confidence guide:
-- high: you can clearly see the discrepancy in the images and/or the named elements data confirms it
-- low: you are inferring a possible issue but cannot clearly confirm it visually
+- high: You can unmistakably see this categorical difference in both images
+- low: Do not report low-confidence issues for this analysis
 
 For each issue, estimate the bounding box of the affected region as normalised \
 coordinates (0–1 range, relative to the full image dimensions). x=0, y=0 is top-left. \
@@ -106,7 +141,7 @@ do not guess randomly.
 
 Be specific. Do NOT say "colors may differ" — say "primary button background appears \
 to be #2563EB but the design specifies #3B82F6". If something matches perfectly, do \
-not mention it. Only report issues you are reasonably confident about.`
+not mention it. Only report issues you are HIGHLY confident about.`
 
   // When computed styles were provided, append exact token diff as grounding data
   if (tokenDiff && tokenDiff.mismatches.length > 0) {
@@ -211,6 +246,79 @@ export async function runAIComparison(figmaBuffer, screenshotBuffer, namedElemen
   // Basic structural validation — ensure the shape we promised callers
   if (!parsed.categories || !parsed.overallSummary) {
     throw new Error('AI returned malformed response')
+  }
+
+  // PART 1 FIX: Post-process to reject quantitative/unreliable vision issues
+  const FORBIDDEN_PATTERNS = [
+    /\bpx\b/,
+    /approximately|appears to be|slightly|around|about/i,
+    /less than|more than|taller|shorter|wider|narrower/i,
+    /estimated|visually|looks like/i,
+    /padding|margin|spacing|border-radius|radius|measurement|dimension/i,
+  ]
+
+  const isQuantitativeClaim = (description) => {
+    if (!description || typeof description !== 'string') return false
+    return FORBIDDEN_PATTERNS.some(pattern => pattern.test(description))
+  }
+
+  // Check for shade comparison (hex codes paired with different hex codes in wrong hue family)
+  const isShadeComparison = (description) => {
+    if (!description) return false
+    // Match patterns like "#E7EEF6 vs #4E4E4E" or "appears #xxx but should be #yyy"
+    const hexMatches = description.match(/#[0-9A-Fa-f]{6}/g)
+    if (!hexMatches || hexMatches.length < 2) return false
+
+    // If two hex codes are present, check if they're in the same hue family
+    // (hue difference < 60 degrees means same color family)
+    const hexToHSL = (hex) => {
+      const r = parseInt(hex.slice(1, 3), 16) / 255
+      const g = parseInt(hex.slice(3, 5), 16) / 255
+      const b = parseInt(hex.slice(5, 7), 16) / 255
+      const max = Math.max(r, g, b)
+      const min = Math.min(r, g, b)
+      let h = 0
+      if (max === r) h = ((g - b) / (max - min) + (g < b ? 6 : 0)) / 6
+      else if (max === g) h = ((b - r) / (max - min) + 2) / 6
+      else h = ((r - g) / (max - min) + 4) / 6
+      return h * 360
+    }
+
+    // Compare hues of first two hex codes
+    if (hexMatches.length >= 2) {
+      const h1 = hexToHSL(hexMatches[0])
+      const h2 = hexToHSL(hexMatches[1])
+      const hueDiff = Math.min(Math.abs(h1 - h2), 360 - Math.abs(h1 - h2))
+      if (hueDiff < 60) {
+        // Same color family — this is a shade comparison, reject it
+        return true
+      }
+    }
+
+    return false
+  }
+
+  // Filter all categories to remove quantitative/unreliable issues
+  if (parsed.categories) {
+    for (const [catName, category] of Object.entries(parsed.categories)) {
+      if (!category.issues) continue
+
+      category.issues = category.issues.filter(issue => {
+        // Reject if description contains forbidden patterns
+        if (isQuantitativeClaim(issue.description)) {
+          console.log(`[aiService] Rejected quantitative vision issue: "${issue.description}"`)
+          return false
+        }
+
+        // Reject if description is a shade comparison (multiple hex codes in same family)
+        if (isShadeComparison(issue.description)) {
+          console.log(`[aiService] Rejected shade comparison vision issue: "${issue.description}"`)
+          return false
+        }
+
+        return true
+      })
+    }
   }
 
   return parsed

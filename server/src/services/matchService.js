@@ -433,6 +433,19 @@ The confidence level will be used to filter matches based on user settings.`
       const figmaElement = figmaByName.get(m.figmaName)
       if (!domNode || !figmaElement) return null   // stale path/name — skip
 
+      // PART 2 FIX: Mark whether this node has real computed styles from bookmarklet
+      // Check if domNode has actual spacing/style values (from bookmarklet extraction)
+      const hasComputedStyles = !!(
+        domNode.styles && (
+          domNode.styles.paddingTop ||
+          domNode.styles.paddingLeft ||
+          domNode.styles.paddingRight ||
+          domNode.styles.paddingBottom ||
+          domNode.styles.backgroundColor ||
+          domNode.styles.color
+        )
+      )
+
       return {
         figmaName:    m.figmaName,
         figmaElement,
@@ -442,6 +455,7 @@ The confidence level will be used to filter matches based on user settings.`
         reasoning:    m.reasoning,
         viewport,
         source:       'page-level',
+        hasComputedStyles,  // true if this node has real computed styles
       }
     })
     .filter(Boolean)
@@ -536,6 +550,18 @@ The confidence level will be used to filter matches based on user settings.`
               const figmaElement = figmaByName.get(m.figmaName)
               if (!domNode || !figmaElement) return null
 
+              // PART 2 FIX: Mark whether this node has real computed styles from bookmarklet
+              const hasComputedStyles = !!(
+                domNode.styles && (
+                  domNode.styles.paddingTop ||
+                  domNode.styles.paddingLeft ||
+                  domNode.styles.paddingRight ||
+                  domNode.styles.paddingBottom ||
+                  domNode.styles.backgroundColor ||
+                  domNode.styles.color
+                )
+              )
+
               return {
                 figmaName:    m.figmaName,
                 figmaElement,
@@ -545,6 +571,7 @@ The confidence level will be used to filter matches based on user settings.`
                 reasoning:    m.reasoning,
                 viewport,
                 source:       'element-picker',
+                hasComputedStyles,
               }
             })
             .filter(Boolean)
