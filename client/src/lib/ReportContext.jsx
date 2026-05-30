@@ -82,6 +82,7 @@ export function ReportProvider({ children }) {
       if (issue) {
         postFeedback({
           sessionId: report.sessionId,
+          figmaFileKey: report.figmaFileKey,  // scope feedback to this file
           issueIndex: globalIndex,
           feedbackType: 'incorrect',
           issue,
@@ -103,6 +104,7 @@ export function ReportProvider({ children }) {
       if (issue) {
         postFeedback({
           sessionId: report.sessionId,
+          figmaFileKey: report.figmaFileKey,  // scope feedback to this file
           issueIndex: globalIndex,
           feedbackType: 'accepted',
           issue,

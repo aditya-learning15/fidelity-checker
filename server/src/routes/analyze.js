@@ -8,7 +8,7 @@ import { parseFigmaUrl, fetchFigmaFrame, exportFigmaFrameAsPng } from '../servic
 import { runFullAnalysis } from '../services/analysisService.js'
 import { matchElements, detectVirtualScrollComponents } from '../services/matchService.js'
 import { extractNamedElements } from '../services/tokenService.js'
-import { loadFeedbackPatterns, loadRawFeedback } from '../services/feedbackService.js'
+import { loadFeedbackPatterns, loadRawFeedback, clearAllFeedback } from '../services/feedbackService.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FEEDBACK_FILE = path.join(__dirname, '../data/feedback.json')
@@ -93,6 +93,7 @@ router.post('/', (req, res) => {
         figmaNodeJson,
         computedStylesJson: computedStyles || null,
         confidenceThreshold: threshold,
+        figmaFileKey: fileKey,
       })
 
       return res.json(report)
@@ -332,11 +333,14 @@ router.post('/enrich', async (req, res) => {
 // Returns: { ok: true, feedbackId: string, timestamp: string }
 router.post('/feedback', async (req, res) => {
   try {
-    const { sessionId, issueIndex, feedbackType, issue, context } = req.body
+    const { sessionId, figmaFileKey, issueIndex, feedbackType, issue, context } = req.body
 
     // --- Validation ---
     if (!sessionId || typeof sessionId !== 'string') {
       return res.status(400).json({ error: 'sessionId is required' })
+    }
+    if (!figmaFileKey || typeof figmaFileKey !== 'string') {
+      return res.status(400).json({ error: 'figmaFileKey is required (scope feedback to file)' })
     }
     if (issueIndex === undefined || typeof issueIndex !== 'number') {
       return res.status(400).json({ error: 'issueIndex is required' })
@@ -354,6 +358,7 @@ router.post('/feedback', async (req, res) => {
     const feedbackEntry = {
       id: feedbackId,
       sessionId,
+      figmaFileKey,  // scope this feedback entry to a specific file
       issueIndex,
       feedbackType,
       issue,
@@ -494,6 +499,23 @@ router.get('/feedback/summary', async (req, res) => {
   } catch (e) {
     console.error('Feedback summary error:', e)
     res.status(500).json({ error: e.message })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// POST /api/feedback/reset — Clear all feedback (for corrupted test data)
+// ---------------------------------------------------------------------------
+router.post('/feedback/reset', async (req, res) => {
+  try {
+    const { cleared } = await clearAllFeedback()
+    res.json({
+      success: true,
+      message: `Cleared ${cleared} feedback entries`,
+      cleared,
+    })
+  } catch (err) {
+    console.error('[feedback/reset]', err.message)
+    res.status(500).json({ error: err.message })
   }
 })
 

@@ -72,12 +72,14 @@ function computeScores(diffResult, aiResult, allIssues = []) {
   const arithmeticScore = computeArithmeticScore(arithmeticIssues)
   const visionScore = computeVisionScore(visionIssues, diffResult)
 
-  // Adaptive weighting: as arithmetic issues are fixed, weight them higher
+  // BUG 4 FIX: Cap vision weight at 30% (vision issues are unreliable)
+  // Arithmetic issues carry at least 70% of the final score
   const totalIssues = Math.max(1, arithmeticIssues.length + visionIssues.length)
-  const arithmeticWeight = Math.min(0.8,
-    0.3 + (arithmeticIssues.length / totalIssues) * 0.5
+  // Vision weight: capped at 0.3, reduced further if there are arithmetic issues
+  const visionWeight = Math.min(0.3,
+    0.15 + (visionIssues.length / totalIssues) * 0.15
   )
-  const visionWeight = 1 - arithmeticWeight
+  const arithmeticWeight = 1 - visionWeight
 
   const overallScore = Math.round(
     arithmeticScore * arithmeticWeight +
@@ -116,12 +118,12 @@ function computeScores(diffResult, aiResult, allIssues = []) {
  *   extractionGaps:  { hasVirtualScroll, virtualScrollSelector, likelyCandidates, message }
  * }>}
  */
-export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNodeJson, computedStylesJson, confidenceThreshold = 'balanced' }) {
+export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNodeJson, computedStylesJson, confidenceThreshold = 'balanced', figmaFileKey = null }) {
   // --- Generate session ID for this analysis run ---
   const sessionId = randomUUID()
 
-  // --- Load feedback patterns from previous user corrections ---
-  const feedbackPatterns = await loadFeedbackPatterns()
+  // --- Load feedback patterns from previous user corrections (scoped to this file) ---
+  const feedbackPatterns = await loadFeedbackPatterns(figmaFileKey || 'unknown')
 
   // --- Pass 1: Named element extraction ---
   // Replaces the old token-summary approach with semantically meaningful
@@ -184,17 +186,25 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
   )
 
   // --- Filter low-confidence issues ---
-  // Remove issues the AI flagged as low-confidence to reduce noise in the report.
-  const filterIssues = (cat) => ({
+  // BUG 4 FIX: Be strict with vision issues (layout, color) — only keep high confidence
+  // Arithmetic issues (typography, spacing) can keep medium confidence
+  const filterIssuesStrict = (cat) => ({
     ...cat,
+    // Vision issues: only high confidence (layout, color are unreliable)
+    issues: (cat.issues ?? []).filter(issue => issue.confidence === 'high'),
+  })
+
+  const filterIssuesBalanced = (cat) => ({
+    ...cat,
+    // Arithmetic issues: keep high + medium (already validated by token diff)
     issues: (cat.issues ?? []).filter(issue => issue.confidence !== 'low'),
   })
 
   const categoriesAfterConfidence = {
-    layout:     filterIssues(aiResult.categories.layout),
-    color:      filterIssues(aiResult.categories.color),
-    typography: filterIssues(aiResult.categories.typography),
-    spacing:    filterIssues(aiResult.categories.spacing),
+    layout:     filterIssuesStrict(aiResult.categories.layout),
+    color:      filterIssuesStrict(aiResult.categories.color),
+    typography: filterIssuesBalanced(aiResult.categories.typography),
+    spacing:    filterIssuesBalanced(aiResult.categories.spacing),
   }
 
   // --- Generate arithmetic issues from matched elements ---
@@ -272,6 +282,7 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
   // --- Assemble final report ---
   return {
     sessionId,
+    figmaFileKey,  // used when posting feedback to scope to this file
     overallScore,
     confidenceThreshold,
     pixelMismatch: {

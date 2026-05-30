@@ -11,9 +11,13 @@ const FEEDBACK_FILE = path.join(__dirname, '../data/feedback.json')
 // ---------------------------------------------------------------------------
 
 /**
- * Load feedback from feedback.json and extract suppression + acceptance patterns.
+ * Load feedback from feedback.json and extract suppression + acceptance patterns
+ * SCOPED to a specific Figma file.
  *
- * Suppression patterns (flagged as incorrect ≥2 times):
+ * Only applies patterns from feedback entries matching the given figmaFileKey.
+ * Entries without figmaFileKey are skipped (legacy/corrupted data).
+ *
+ * Suppression patterns (flagged as incorrect ≥3 times):
  *   Used to remove issues from future reports completely.
  *   Pattern key: {category}:{property}:{referencedElement}
  *
@@ -21,16 +25,19 @@ const FEEDBACK_FILE = path.join(__dirname, '../data/feedback.json')
  *   Used to downgrade severity in future reports.
  *   Pattern key: {category}:{property}:{referencedElement}
  *
+ * @param {string} figmaFileKey - The Figma file key to scope patterns to
  * @returns {Promise<{
  *   suppressionPatterns: Set<string>,
  *   acceptedDeviations: Map<string, number>,  // maps to count of times accepted
- *   totalFeedbackEntries: number
+ *   totalFeedbackEntries: number,
+ *   matchedEntries: number  // entries matching this figmaFileKey
  * }>}
  */
-export async function loadFeedbackPatterns() {
+export async function loadFeedbackPatterns(figmaFileKey) {
   const suppressionPatterns = new Set()
   const acceptedDeviations = new Map()
   let totalFeedbackEntries = 0
+  let matchedEntries = 0
 
   try {
     const content = await fs.readFile(FEEDBACK_FILE, 'utf-8')
@@ -38,19 +45,28 @@ export async function loadFeedbackPatterns() {
 
     if (!Array.isArray(allFeedback)) {
       console.warn('[feedbackService] feedback.json is not an array')
-      return { suppressionPatterns, acceptedDeviations, totalFeedbackEntries }
+      return { suppressionPatterns, acceptedDeviations, totalFeedbackEntries, matchedEntries }
     }
 
     totalFeedbackEntries = allFeedback.length
 
-    // Count occurrences by pattern key
+    // Count occurrences by pattern key, ONLY for entries matching figmaFileKey
     const patternCounts = {
       incorrect: {},   // grouped by pattern key
       accepted: {},
     }
 
     for (const entry of allFeedback) {
-      const { feedbackType, issue } = entry
+      const { feedbackType, issue, figmaFileKey: entryFileKey } = entry
+
+      // Skip entries without figmaFileKey (legacy/corrupted data)
+      if (!entryFileKey) continue
+
+      // Only process entries for this specific file
+      if (entryFileKey !== figmaFileKey) continue
+
+      matchedEntries++
+
       if (!issue) continue
 
       const patternKey = buildPatternKey(issue)
@@ -76,7 +92,7 @@ export async function loadFeedbackPatterns() {
     }
 
     console.log(
-      `[feedbackService] Loaded ${totalFeedbackEntries} feedback entries: ` +
+      `[feedbackService] Loaded ${matchedEntries}/${totalFeedbackEntries} feedback entries for ${figmaFileKey}: ` +
       `${suppressionPatterns.size} suppression patterns, ` +
       `${acceptedDeviations.size} accepted deviation patterns`
     )
@@ -87,7 +103,7 @@ export async function loadFeedbackPatterns() {
     // feedback.json doesn't exist yet — return empty patterns
   }
 
-  return { suppressionPatterns, acceptedDeviations, totalFeedbackEntries }
+  return { suppressionPatterns, acceptedDeviations, totalFeedbackEntries, matchedEntries }
 }
 
 /**
@@ -196,5 +212,23 @@ export function loadRawFeedback() {
     return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
+  }
+}
+
+/**
+ * Clear all feedback from feedback.json.
+ * Used to reset corrupted/test data.
+ *
+ * @returns {Promise<{ cleared: number }>}
+ */
+export async function clearAllFeedback() {
+  try {
+    const count = loadRawFeedback().length
+    await fs.writeFile(FEEDBACK_FILE, JSON.stringify([], null, 2), 'utf-8')
+    console.log(`[feedbackService] Cleared ${count} feedback entries`)
+    return { cleared: count }
+  } catch (err) {
+    console.error('[feedbackService] Error clearing feedback:', err.message)
+    throw err
   }
 }

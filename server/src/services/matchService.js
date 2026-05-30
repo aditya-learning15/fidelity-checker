@@ -328,15 +328,47 @@ export async function matchElements(figmaNamedElements, domTreeJson, geminiApiKe
   // --- Step 3: Compress nodes for prompt ---
   const compressedDomNodes = flatNodes.map(compressNode)
 
-  // --- Step 4: Initialize Gemini client ---
+  // --- Step 4: Initialize Gemini client with fallback models ---
   const client = new GoogleGenerativeAI(geminiApiKey)
-  const model = client.getGenerativeModel({
-    model: 'gemini-2.5-flash',
-    generationConfig: {
-      temperature: 0,
-      responseMimeType: 'application/json',
-    },
-  })
+
+  // Helper: call Gemini with retry + model fallback on 503
+  async function callGeminiWithRetry(prompt) {
+    const MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
+    const MAX_RETRIES = 2
+    const RETRY_DELAY_MS = 3000
+
+    for (const modelName of MODELS) {
+      const model = client.getGenerativeModel({
+        model: modelName,
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: 'application/json',
+        },
+      })
+
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const response = await model.generateContent(prompt)
+          const text = response.response.text()
+          return JSON.parse(text)
+        } catch (err) {
+          const is503 = err.message?.includes('503') || err.message?.includes('Service Unavailable') || err.message?.includes('high demand')
+          const isLast = attempt === MAX_RETRIES
+          if (is503 && !isLast) {
+            console.warn(`[matchService] Gemini ${modelName} 503, retrying in ${RETRY_DELAY_MS}ms (attempt ${attempt + 1}/${MAX_RETRIES})`)
+            await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
+            continue
+          }
+          if (is503) {
+            console.warn(`[matchService] Gemini ${modelName} still 503 after ${MAX_RETRIES} retries, trying next model`)
+            break // try next model
+          }
+          throw err // non-503 error — propagate immediately
+        }
+      }
+    }
+    throw new Error('All Gemini models unavailable (503). Please try again later.')
+  }
 
   // --- Step 5: Call Gemini for page-level matching ---
   const prompt = `You are a UI component matching engine.
@@ -351,6 +383,7 @@ Match based on:
 - Visual role (a button labeled "Create Job" in Figma matches a button with text "Create Job" in DOM)
 - Structural position (a top-navigation element in Figma matches a DOM node with a small y rect value)
 - Visual properties (similar background color, border-radius, size)
+- Dimensional fit (for container elements like bars/headers/panels, prefer the element whose width and height most closely match the Figma element)
 - Text content where available
 
 Rules:
@@ -358,6 +391,7 @@ Rules:
 - One Figma element maps to at most one DOM node
 - It is fine to leave a Figma element unmatched if no good match exists
 - Do NOT guess — an unmatched element is better than a wrong match
+- For container elements (bars, headers, panels): match to the OUTER container, not inner children. Prefer dimensional fit.
 
 Figma elements:
 ${JSON.stringify(figmaNamedElements, null, 2)}
@@ -383,9 +417,7 @@ The confidence level will be used to filter matches based on user settings.`
 
   let geminiResult
   try {
-    const response = await model.generateContent(prompt)
-    const text     = response.response.text()
-    geminiResult   = JSON.parse(text)
+    geminiResult = await callGeminiWithRetry(prompt)
   } catch (err) {
     console.warn('[matchService] Gemini element matching failed:', err.message)
     return empty
@@ -395,7 +427,7 @@ The confidence level will be used to filter matches based on user settings.`
   const nodeByPath  = new Map(flatNodes.map(n => [n.path, n]))
   const figmaByName = new Map(figmaNamedElements.map(e => [e.name, e]))
 
-  const matches = (geminiResult.matches ?? [])
+  let matches = (geminiResult.matches ?? [])
     .map(m => {
       const domNode      = nodeByPath.get(m.domPath)
       const figmaElement = figmaByName.get(m.figmaName)
@@ -415,7 +447,7 @@ The confidence level will be used to filter matches based on user settings.`
     .filter(Boolean)
 
   // --- Filter matches by confidence threshold ---
-  let thresholdFiltered = []
+  const thresholdFiltered = []
 
   matches = matches.filter(match => {
     if (allowedConfidence.includes(match.confidence)) {
@@ -494,9 +526,7 @@ Return a JSON object ONLY, no preamble:
 Include matches with any confidence level (high, medium, low).
 The confidence level will be used to filter matches based on user settings.`
 
-          const pickerResult = await model.generateContent(secondPrompt)
-          const pickerText = pickerResult.response.text()
-          const pickerMatches = JSON.parse(pickerText)
+          const pickerMatches = await callGeminiWithRetry(secondPrompt)
 
           // Merge picker matches into main result
           const pickerNodeMap = new Map(pickerFlatNodes.map(n => [n.path, n]))

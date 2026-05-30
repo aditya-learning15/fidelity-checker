@@ -181,10 +181,19 @@ function walkNamedElements(node, results, limit, depth = 0, maxDepth = 4) {
     }
 
     // Corner radius — per-corner array takes precedence
+    // BUG 2 FIX: Mark as pill if cornerRadius >= 100 (fully-rounded sentinel)
     const cr = Array.isArray(node.rectangleCornerRadii)
       ? node.rectangleCornerRadii[0]   // use TL as representative value
       : node.cornerRadius
-    if (cr != null && cr > 0) el.cornerRadius = cr
+    if (cr != null && cr > 0) {
+      if (cr >= 100) {
+        // Fully-rounded / pill shape, not a literal radius
+        el.isPill = true
+        // Don't store the literal large value
+      } else {
+        el.cornerRadius = cr
+      }
+    }
 
     // Padding (skip zero values to keep the payload lean)
     for (const p of ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom']) {

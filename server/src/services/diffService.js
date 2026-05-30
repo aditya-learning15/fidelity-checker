@@ -286,6 +286,20 @@ export function computePropertyDiff(match) {
       const domVal = parseNumberValue(dom.styles[domProp])
 
       if (figmaVal != null && domVal != null) {
+        // BUG 3 FIX: Skip if Figma value is not a "clean" number (scale artifact)
+        // Clean numbers are within 0.5px of whole or half-pixel values
+        const isClean = Number.isInteger(figmaVal) || Number.isInteger(figmaVal * 2)
+        if (!isClean) {
+          // Suspect scale artifact (e.g., 2.02px) — skip this comparison
+          continue
+        }
+
+        // BUG 3 FIX: Skip implausible mismatches
+        // If Figma is very small (<4px) but DOM is large (>16px), wrong node
+        if (figmaVal < 4 && domVal > 16) {
+          continue
+        }
+
         const delta = Math.abs(figmaVal - domVal)
         // Skip implausible deltas — likely a mismatched element pair
         if (Math.abs(delta) > 50) continue
@@ -314,18 +328,25 @@ export function computePropertyDiff(match) {
   }
 
   // --- Border radius ---
+  // BUG 2 FIX: Skip if cornerRadius >= 100 (sentinel for fully-rounded/pill shapes)
   if (figma.cornerRadius != null && dom.styles?.borderRadius) {
     const figmaRadius = parseNumberValue(figma.cornerRadius.toString())
-    const domRadiusStr = dom.styles.borderRadius
-    // Extract first number from borderRadius (could be "4px" or "4px 4px 0 0", etc.)
-    const domRadius = parseNumberValue(domRadiusStr.split(/\s+/)[0])
 
-    if (figmaRadius != null && domRadius != null) {
-      const delta = Math.abs(figmaRadius - domRadius)
-      // Skip implausible deltas — likely a mismatched element pair
-      if (Math.abs(delta) > 30) {
-        // Skip this comparison; likely a mismatched element
-      } else if (delta > 4) {
+    // Figma stores fully-rounded / pill-shaped corners as very large values (e.g., 999)
+    // These are not literal radius values — skip comparison entirely
+    if (figmaRadius >= 100) {
+      // This is a pill/fully-rounded shape, not a precise radius. Do not compare.
+    } else {
+      const domRadiusStr = dom.styles.borderRadius
+      // Extract first number from borderRadius (could be "4px" or "4px 4px 0 0", etc.)
+      const domRadius = parseNumberValue(domRadiusStr.split(/\s+/)[0])
+
+      if (figmaRadius != null && domRadius != null) {
+        const delta = Math.abs(figmaRadius - domRadius)
+        // Skip implausible deltas — likely a mismatched element pair
+        if (Math.abs(delta) > 30) {
+          // Skip this comparison; likely a mismatched element
+        } else if (delta > 4) {
         issues.push({
           property: 'borderRadius',
           figmaValue: `${figmaRadius}px`,
@@ -343,6 +364,7 @@ export function computePropertyDiff(match) {
           category: 'radius',
           severity: 'minor',
         })
+      }
       }
     }
   }
