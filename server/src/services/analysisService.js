@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import { writeFileSync } from 'fs'
 import { extractTokens, extractNamedElements, parseComputedStyles, diffTokenSets } from './tokenService.js'
 import { runPixelDiff, computePropertyDiff, buildDomBoundingBox, extractDiffRegions } from './diffService.js'
 import { runAIComparison } from './aiService.js'
@@ -23,48 +24,177 @@ import { loadFeedbackPatterns, applyFeedbackFilters } from './feedbackService.js
  * @returns {object[]} Filtered issues with evidence
  */
 function filterIssuesWithoutEvidence(issues) {
-  return issues.filter(issue => {
-    // Presence/absence issues (vision-only, no exact values)
-    if (issue.category === 'layout' && issue.description?.includes('missing')) {
-      // Only keep if high confidence, and mark as unverified
-      if (issue.confidence === 'high') {
-        // Add qualifier if not already present
-        if (!issue.description.includes('visual check')) {
-          issue.description = `${issue.description} (visual check — please verify)`
-        }
-        return true
+  const filteredIssues = issues.filter(issue => {
+    // Determine whether this is an arithmetic issue (has computed values) or a vision issue.
+    // Vision issues from the AI never have figmaValue/domValue — they're categorical observations.
+    // Arithmetic issues from computePropertyDiff always have both figmaValue and domValue.
+    //
+    // undefined != null is FALSE in JS loose equality, so this correctly detects
+    // issues where neither field was set (pure vision output).
+    const hasAnyEvidence = issue.figmaValue != null || issue.domValue != null
+
+    if (hasAnyEvidence) {
+      // ── Arithmetic issue ── require both values to be concrete
+      if (issue.category === 'color') {
+        // Color arithmetic: both sides must be valid hex codes
+        const hasFigmaHex = issue.figmaValue && /^#[0-9A-Fa-f]{6}$/.test(issue.figmaValue)
+        const hasDomHex   = issue.domValue   && /^#[0-9A-Fa-f]{6}$/.test(issue.domValue)
+        return hasFigmaHex && hasDomHex
       }
-      // Drop medium/low confidence presence claims
-      return false
+      // All other arithmetic (typography, spacing, radius): both values must be non-empty
+      return issue.figmaValue != null && issue.figmaValue !== '' &&
+             issue.domValue   != null && issue.domValue   !== ''
     }
 
-    // Color issues: must have both figmaValue AND domValue (computed hex)
-    if (issue.category === 'color') {
-      const hasFigmaHex = issue.figmaValue && /^#[0-9A-Fa-f]{6}$/.test(issue.figmaValue)
-      const hasDomHex = issue.domValue && /^#[0-9A-Fa-f]{6}$/.test(issue.domValue)
+    // ── Vision issue (no figmaValue or domValue) ──
+    // Keep only high-confidence observations. Medium/low confidence vision claims are unreliable.
+    if (issue.confidence !== 'high') return false
 
-      if (hasFigmaHex && hasDomHex) {
-        return true  // Has both hex codes — keep it
-      }
-
-      // No computed hex evidence — drop color issue
-      return false
-    }
-
-    // Arithmetic issues (typography, spacing, etc.): must have both values
-    if (issue.figmaValue != null && issue.domValue != null) {
-      // Check if values are specific (not vague like "light grey")
-      const figmaIsSpecific = issue.figmaValue !== '' && issue.figmaValue !== null
-      const domIsSpecific = issue.domValue !== '' && issue.domValue !== null
-
-      if (figmaIsSpecific && domIsSpecific) {
-        return true  // Has both concrete values
+    // Presence/absence claims get a "please verify" qualifier
+    const desc = issue.description ?? ''
+    if (/missing|absent|not present|not visible/i.test(desc)) {
+      if (!desc.includes('visual check')) {
+        issue.description = `${desc} (visual check — please verify)`
       }
     }
 
-    // No evidence — drop it
-    return false
+    return true
   })
+
+  const arithmeticOut = filteredIssues.filter(i => i.source === 'arithmetic').length
+  const visionOut     = filteredIssues.filter(i => i.source !== 'arithmetic').length
+  console.log(`[analysisService] Evidence filter: ${issues.length} in → ${filteredIssues.length} out (arithmetic: ${arithmeticOut}, vision: ${visionOut})`)
+  return filteredIssues
+}
+
+// ---------------------------------------------------------------------------
+// State-mismatch helpers (Fix B)
+// ---------------------------------------------------------------------------
+
+/** Convert a #RRGGBB hex string to its HSL hue (0–360). */
+function hexToHue(hex) {
+  if (!hex || !/^#[0-9A-Fa-f]{6}$/i.test(hex)) return null
+  const r = parseInt(hex.slice(1, 3), 16) / 255
+  const g = parseInt(hex.slice(3, 5), 16) / 255
+  const b = parseInt(hex.slice(5, 7), 16) / 255
+  const max = Math.max(r, g, b), min = Math.min(r, g, b)
+  if (max === min) return 0
+  const d = max - min
+  let h
+  switch (max) {
+    case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break
+    case g: h = ((b - r) / d + 2) / 6; break
+    default: h = ((r - g) / d + 4) / 6
+  }
+  return h * 360
+}
+
+/** True if two hex colours are in completely different hue families (>60° apart). */
+function isFullHueFamilyChange(hex1, hex2) {
+  const h1 = hexToHue(hex1), h2 = hexToHue(hex2)
+  if (h1 === null || h2 === null) return false
+  return Math.min(Math.abs(h1 - h2), 360 - Math.abs(h1 - h2)) > 60
+}
+
+/** True if the colour is white, off-white, or a near-neutral grey. */
+function isWhiteOrNeutral(hex) {
+  if (!hex || !/^#[0-9A-Fa-f]{6}$/i.test(hex)) return false
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return Math.max(r, g, b) - Math.min(r, g, b) < 40 && Math.max(r, g, b) > 170
+}
+
+// ---------------------------------------------------------------------------
+// Token mismatch → issue conversion
+// ---------------------------------------------------------------------------
+
+const TOKEN_TYPE_TO_CATEGORY = {
+  typography: 'typography',
+  spacing:    'spacing',
+  radius:     'spacing',
+  // color: intentionally excluded — color requires hex context and can be noisy globally
+}
+
+const SKIP_PROPERTIES = new Set([
+  'cornerRadius', 'borderRadius',  // pill-shape sentinel noise
+  'borderTopLeftRadius', 'borderTopRightRadius',
+  'borderBottomLeftRadius', 'borderBottomRightRadius',
+])
+
+/**
+ * Convert tokenDiff.mismatches into report issues.
+ * These are arithmetic issues with exact figmaValue + domValue pairs.
+ * They do NOT require Gemini element matching — they come directly from
+ * the token diff between Figma design tokens and computed browser styles.
+ *
+ * @param {object|null} tokenDiff - Output of diffTokenSets()
+ * @returns {object[]} Issues in report format
+ */
+function tokenMismatchesToIssues(tokenDiff) {
+  if (!tokenDiff?.mismatches?.length) return []
+
+  // STEP 1 DIAGNOSTIC: Inspect what mismatches actually contain
+  console.log('=== TOKEN DIFF INSPECTION ===')
+  console.log('Total mismatches:', tokenDiff.mismatches.length)
+  tokenDiff.mismatches.forEach((m, i) => {
+    console.log(`Mismatch ${i}:`, {
+      type:         m.type,
+      property:     m.property,
+      figmaValue:   m.figmaValue,
+      domValue:     m.computedValue,
+      delta:        m.delta,
+      figmaElement: m.nodeName ?? m.figmaNodeName ?? m.figmaElementName ?? 'UNKNOWN',
+      domElement:   m.domPath ?? m.nodeTag ?? m.domNodeName ?? 'UNKNOWN',
+    })
+  })
+  console.log('=== END TOKEN DIFF ===')
+
+  const issues = []
+  const seen = new Set()
+
+  for (const mismatch of tokenDiff.mismatches) {
+    const category = TOKEN_TYPE_TO_CATEGORY[mismatch.type]
+    if (!category) continue                           // skip color and unknown types
+    if (SKIP_PROPERTIES.has(mismatch.property)) continue  // skip noisy radius props
+
+    // Skip sub-pixel differences (rounding artefacts)
+    const delta = mismatch.delta ?? null
+    if (delta !== null && delta < 1) continue
+
+    // Deduplicate: same property + same value pair
+    const key = `${mismatch.property}:${mismatch.figmaValue}:${mismatch.computedValue}`
+    if (seen.has(key)) continue
+    seen.add(key)
+
+    // Severity from delta
+    let severity = 'major'
+    if (delta !== null) {
+      if (delta >= 8) severity = 'critical'
+      else if (delta >= 4) severity = 'major'
+      else severity = 'minor'
+    }
+
+    // Human-readable property label (camelCase → spaced words)
+    const propLabel = mismatch.property
+      .replace(/([A-Z])/g, ' $1')
+      .toLowerCase()
+      .trim()
+
+    issues.push({
+      severity,
+      confidence: 'high',
+      category,
+      description: `${propLabel}: design specifies ${mismatch.figmaValue}, build renders ${mismatch.computedValue}`,
+      figmaValue:  mismatch.figmaValue,
+      domValue:    mismatch.computedValue,
+      source:      'arithmetic',
+      suggestion:  `Set ${mismatch.property} to ${mismatch.figmaValue} to match the design spec`,
+    })
+  }
+
+  console.log(`[analysisService] tokenMismatchesToIssues: ${tokenDiff.mismatches.length} mismatches → ${issues.length} issues`)
+  return issues
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +313,18 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
   // --- Generate session ID for this analysis run ---
   const sessionId = randomUUID()
 
+  // DIAGNOSTIC: Check if bookmarklet data reached the backend
+  console.log('[analysisService] === ENTRY POINT DEBUG ===')
+  console.log('[analysisService] computedStylesJson received:', !!computedStylesJson)
+  if (computedStylesJson) {
+    try {
+      const parsed = typeof computedStylesJson === 'string' ? JSON.parse(computedStylesJson) : computedStylesJson
+      console.log('[analysisService] computedStylesJson is valid, tree present:', !!parsed?.tree)
+    } catch (e) {
+      console.log('[analysisService] computedStylesJson parse error:', e.message)
+    }
+  }
+
   // --- Load feedback patterns from previous user corrections (scoped to this file) ---
   const feedbackPatterns = await loadFeedbackPatterns(figmaFileKey || 'unknown')
 
@@ -198,6 +340,7 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
   // receives namedElements, which is richer and more semantically grounded.
   let tokenDiff = null
   let matchedElements = null
+  let matchResult = null
   if (computedStylesJson) {
     try {
       const rawTokens      = extractTokens(figmaNodeJson)
@@ -209,10 +352,16 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
       // have been verified as correct via arithmetic (token) analysis.
       // These matched elements should be excluded from vision AI evaluation.
       try {
-        const matchResult = await matchElements(
+        // REDUCTION 1: Pass cache parameters to reuse match results within 1 hour
+        const nodeId = figmaNodeJson?.id ?? null
+        matchResult = await matchElements(
           namedElements,
           computedStylesJson,
-          process.env.GEMINI_API_KEY
+          process.env.GEMINI_API_KEY,
+          null,
+          'balanced',
+          figmaFileKey,
+          nodeId
         )
         if (matchResult.matches && matchResult.matches.length > 0) {
           matchedElements = matchResult.matches.map(m => ({
@@ -228,6 +377,41 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
       // Non-fatal — computed styles are optional; log and continue
       console.warn('[analysisService] Could not parse computed styles:', err.message)
     }
+
+    // DIAGNOSTIC: Full arithmetic pipeline verification
+    console.log('=== ARITHMETIC PIPELINE DEBUG ===')
+    console.log('namedElements count:', namedElements.length)
+    console.log('matchResult.matches count:', matchResult?.matches?.length ?? 'NO MATCH RESULT')
+    console.log('matchResult.unmatched count:', matchResult?.unmatched?.length ?? 0)
+
+    // Step A: Show first 5 matches — figmaName, domPath, confidence, reasoning
+    console.log('--- Match pairings (first 5) ---')
+    if (matchResult?.matches?.length > 0) {
+      matchResult.matches.slice(0, 5).forEach((m, i) => {
+        console.log(`Pairing ${i}: "${m.figmaName}" → "${m.domPath}"`, {
+          confidence: m.confidence,
+          reasoning:  m.reasoning,
+        })
+      })
+    }
+
+    // Step B: Per-match diff output
+    console.log('--- Per-match diffs ---')
+    if (matchResult?.matches?.length > 0) {
+      matchResult.matches.forEach((m, i) => {
+        const diffs = computePropertyDiff(m)
+        console.log(`Match ${i}: ${m.figmaName}`, {
+          hasComputedStyles: !!m.domNode?.styles,
+          diffsGenerated:    diffs.length,
+          sampleDiff:        diffs[0]
+            ? { property: diffs[0].property ?? diffs[0].description,
+                figmaValue: diffs[0].figmaValue,
+                domValue:   diffs[0].domValue }
+            : null,
+        })
+      })
+    }
+    console.log('=== END ARITHMETIC DEBUG ===')
   }
 
   // --- Pass 2: Pixel diff ---
@@ -236,15 +420,34 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
   const diffResult = await runPixelDiff(figmaBuffer, screenshotBuffer)
 
   // --- Pass 3: AI semantic comparison ---
-  // Use aligned buffers so both images are the same size when sent to Gemini.
-  // Pass matched elements so AI won't generate false positive issues for already-verified elements.
-  const aiResult = await runAIComparison(
-    diffResult.alignedFigmaBuffer,
-    diffResult.alignedScreenshotBuffer,
-    namedElements,
-    tokenDiff,    // null when not provided — aiService handles gracefully
-    matchedElements,  // null when no computed styles — aiService handles gracefully
-  )
+  // REDUCTION 2: Only run vision pass if there are unmatched elements
+  // If arithmetic covered everything, skip the expensive Gemini vision call
+  const hasUnmatchedElements = matchResult?.unmatched?.length > 0 ||
+                                (matchResult?.matches?.length ?? 0) < (namedElements?.length ?? 0)
+
+  let aiResult = {
+    categories: {
+      layout:     { score: 100, issues: [] },
+      color:      { score: 100, issues: [] },
+      typography: { score: 100, issues: [] },
+      spacing:    { score: 100, issues: [] },
+    },
+    overallSummary: 'Vision pass skipped — all elements matched via arithmetic',
+  }
+
+  if (hasUnmatchedElements) {
+    // Use aligned buffers so both images are the same size when sent to Gemini.
+    // Pass matched elements so AI won't generate false positive issues for already-verified elements.
+    aiResult = await runAIComparison(
+      diffResult.alignedFigmaBuffer,
+      diffResult.alignedScreenshotBuffer,
+      namedElements,
+      tokenDiff,    // null when not provided — aiService handles gracefully
+      matchedElements,  // null when no computed styles — aiService handles gracefully
+    )
+  } else {
+    console.log('[analysisService] Skipping vision pass — all Figma elements matched via arithmetic')
+  }
 
   // --- Filter low-confidence issues ---
   // BUG 4 FIX: Be strict with vision issues (layout, color) — only keep high confidence
@@ -268,14 +471,154 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
     spacing:    filterIssuesBalanced(aiResult.categories.spacing),
   }
 
-  // --- Generate arithmetic issues from matched elements ---
-  // If we have matched elements, compare them for property discrepancies
-  let arithmeticIssuesCount = 0
-  if (matchedElements && matchedElements.length > 0) {
-    // matchedElements from Part 6 is a simplified array of {figmaName, confidence}
-    // We need the full match objects to run computePropertyDiff
-    // This will be added when we regenerate matches in the enrich endpoint
-    // For now, we'll extract diff regions for vision issues to use for bounding boxes
+  // --- Generate arithmetic issues from Gemini-matched elements ---
+  // tokenDiff.mismatches is NOT used here — it has no element attribution (figmaElement: UNKNOWN)
+  // and produces wrong-element-pairing false positives (confirmed by diagnostic).
+  // Arithmetic issues come only from computePropertyDiff on verified Gemini matches,
+  // which pairs a specific Figma element with its corresponding DOM node.
+  if (matchResult?.matches?.length > 0) {
+    // ── FIX 1: Deduplicate by DOM path ──────────────────────────────────────
+    // Two Figma elements can be matched to the same DOM node (confirmed: "1280"
+    // and "Main Container" both resolved to the root div). Keep only the best
+    // match per DOM path: higher confidence wins; ties broken by dimensional fit.
+    const confRank = { high: 3, medium: 2, low: 1 }
+    const dimensionalFit = (m) => {
+      const fw = m.figmaElement?.width,  fh = m.figmaElement?.height
+      const dw = m.domNode?.rect?.w,     dh = m.domNode?.rect?.h
+      if (!fw || !fh || !dw || !dh) return 0
+      return (Math.min(fw, dw) / Math.max(fw, dw)) +
+             (Math.min(fh, dh) / Math.max(fh, dh))
+    }
+
+    const domPathBestMatch = new Map()
+    for (const m of matchResult.matches) {
+      if (!domPathBestMatch.has(m.domPath)) {
+        domPathBestMatch.set(m.domPath, m)
+      } else {
+        const prev = domPathBestMatch.get(m.domPath)
+        const mRank = confRank[m.confidence] ?? 0
+        const pRank = confRank[prev.confidence] ?? 0
+        if (mRank > pRank || (mRank === pRank && dimensionalFit(m) > dimensionalFit(prev))) {
+          domPathBestMatch.set(m.domPath, m)
+        }
+      }
+    }
+
+    // ── FIX 2: Drop SVG element matches ─────────────────────────────────────
+    // Icons are matched to both their container div AND the inner svg element.
+    // The svg element has no CSS spacing — keep the container div, drop the svg.
+    const candidateMatches = Array.from(domPathBestMatch.values())
+      .filter(m => m.domNode?.tag !== 'svg')
+
+    // ── Fix B: Build duplicate-name set for state-mismatch detection ─────────
+    // Figma components with the same name (e.g. "Tabs" × 8) represent a set of
+    // sibling instances that may be in different interaction states in the DOM.
+    // A dramatic color flip on one of them is likely a state mismatch, not a bug.
+    const figmaNameCounts = new Map()
+    for (const m of matchResult.matches) {
+      figmaNameCounts.set(m.figmaName, (figmaNameCounts.get(m.figmaName) ?? 0) + 1)
+    }
+    const duplicateFigmaNames = new Set(
+      [...figmaNameCounts.entries()]
+        .filter(([, count]) => count > 1)
+        .map(([name]) => name)
+    )
+
+    const arithmeticSeen = new Set()
+    const pairingReport  = []
+
+    for (const match of candidateMatches) {
+      // ── FIX 3: Dimensional sanity gate ──────────────────────────────────
+      // If either dimension is more than 2× different, the pairing is implausible.
+      const fw = match.figmaElement?.width,  fh = match.figmaElement?.height
+      const dw = match.domNode?.rect?.w,     dh = match.domNode?.rect?.h
+      if (fw && fh && dw && dh) {
+        const wRatio = Math.min(fw, dw) / Math.max(fw, dw)
+        const hRatio = Math.min(fh, dh) / Math.max(fh, dh)
+        if (wRatio < 0.5 || hRatio < 0.5) {
+          console.log(`[analysisService] Skipping dimensionally implausible: "${match.figmaName}" (w=${wRatio.toFixed(2)} h=${hRatio.toFixed(2)})`)
+          continue
+        }
+      }
+
+      const isVectorType = match.figmaElement?.type === 'VECTOR'
+      const diffs = computePropertyDiff(match)
+
+      // For VECTOR/icon elements allow color diffs only — no spacing
+      const filteredDiffs = isVectorType
+        ? diffs.filter(d => d.category === 'color')
+        : diffs
+
+      const matchIssues = []
+      const KNOWN_CATEGORIES = new Set(['layout', 'color', 'typography', 'spacing'])
+      for (const diff of filteredDiffs) {
+        const cat = diff.category
+        if (!KNOWN_CATEGORIES.has(cat)) {
+          console.warn(`[analysisService] Issue with unmapped category "${cat}" dropped: ${diff.property} (${diff.figmaValue} vs ${diff.domValue})`)
+        }
+        if (!categoriesAfterConfidence[cat]) continue
+
+        // ── Fix B: State-mismatch guard ─────────────────────────────────────
+        // Identically-named repeated components (e.g. Tabs × 8) may be in
+        // different interaction states in the DOM. A full hue-family color flip
+        // on one of them (e.g. white Figma default vs blue DOM active state)
+        // is a state mismatch, not a design error — suppress it.
+        if (cat === 'color' && duplicateFigmaNames.has(match.figmaName)) {
+          const fh = diff.figmaValue, dh = diff.domValue
+          if (isFullHueFamilyChange(fh, dh) &&
+              (isWhiteOrNeutral(fh) || isWhiteOrNeutral(dh))) {
+            console.log(`[analysisService] State-mismatch suppressed: "${match.figmaName}" ${fh} vs ${dh}`)
+            continue
+          }
+        }
+
+        const dedupKey = `${match.figmaName}::${diff.property ?? diff.description}`
+        if (arithmeticSeen.has(dedupKey)) continue
+        arithmeticSeen.add(dedupKey)
+
+        categoriesAfterConfidence[cat] = {
+          ...categoriesAfterConfidence[cat],
+          issues: [...(categoriesAfterConfidence[cat].issues ?? []),
+            { ...diff, source: 'arithmetic' }],
+        }
+        matchIssues.push({
+          property:   diff.property,
+          category:   diff.category,
+          figmaValue: diff.figmaValue,
+          domValue:   diff.domValue,
+          severity:   diff.severity,
+        })
+      }
+
+      const entry = {
+        figmaName:        match.figmaName,
+        figmaType:        match.figmaElement?.type,
+        domPath:          match.domPath,
+        confidence:       match.confidence,
+        arithmeticIssues: matchIssues,
+      }
+
+      // FIX 2: Diagnostic data for icon SVG fill comparison validation
+      if (match.figmaElement?.type === 'VECTOR') {
+        entry.domDiagnostics = {
+          domTag:       match.domNode?.tag,
+          domColor:     match.domNode?.styles?.color,
+          domFill:      match.domNode?.styles?.fill,
+          // If the DOM node has a child SVG, capture its fill style
+          childSvgFill: match.domNode?.children?.find((c) => c?.tag === 'svg')?.styles?.fill ?? null,
+        }
+      }
+
+      pairingReport.push(entry)
+    }
+
+    // Write extended pairings dump (survives log buffer truncation)
+    try {
+      writeFileSync('/tmp/pairings.json', JSON.stringify(pairingReport, null, 2))
+      console.log(`[analysisService] Pairings dump: ${candidateMatches.length} after SVG filter, ${pairingReport.length} passed sanity gate`)
+    } catch (e) {
+      console.warn('[analysisService] Could not write pairings dump:', e.message)
+    }
   }
 
   // Extract diff regions from the pixel diff for vision issue localization

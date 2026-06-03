@@ -1,10 +1,47 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
+import { createHash } from 'crypto'
+import { writeFileSync } from 'fs'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const SKIP_TAGS = new Set(['script', 'style', 'meta', 'head', 'html'])
+
+// REDUCTION 1: In-memory cache for matchElements results
+// Key: hash of (figmaFileKey + nodeId + domDataHash)
+// Value: { result, timestamp } with 1-hour TTL
+const MATCH_CACHE = new Map()
+const MATCH_CACHE_TTL_MS = 3600000 // 1 hour
+
+function getCacheKey(figmaFileKey, nodeId, domTreeJson, figmaNamedElements) {
+  const hash = createHash('sha256')
+    .update(
+      figmaFileKey + '::' +
+      nodeId + '::' +
+      JSON.stringify(domTreeJson) + '::' +
+      // Include figma element names so cache busts when extraction changes
+      (figmaNamedElements ?? []).map(e => e.name).sort().join(',')
+    )
+    .digest('hex')
+  return hash
+}
+
+function getCachedMatch(cacheKey) {
+  const entry = MATCH_CACHE.get(cacheKey)
+  if (!entry) return null
+  const age = Date.now() - entry.timestamp
+  if (age > MATCH_CACHE_TTL_MS) {
+    MATCH_CACHE.delete(cacheKey)
+    return null
+  }
+  console.log('[matchService] Cache hit — reusing previous match result')
+  return entry.result
+}
+
+function setCachedMatch(cacheKey, result) {
+  MATCH_CACHE.set(cacheKey, { result, timestamp: Date.now() })
+}
 
 // ---------------------------------------------------------------------------
 // Part 1 — DOM tree flattening
@@ -125,12 +162,18 @@ function walkDom(node, parentPath, siblings, results) {
  * }>}
  */
 export function flattenDomTree(domTreeJson) {
-  if (!domTreeJson?.tree) return []
+  // Accept both a raw JSON string and an already-parsed object.
+  // analysisService passes computedStylesJson as a string; parse it here.
+  let parsed = domTreeJson
+  if (typeof domTreeJson === 'string') {
+    try { parsed = JSON.parse(domTreeJson) } catch { return [] }
+  }
+  if (!parsed?.tree) return []
 
   const results = []
   // Root node (body) is passed as its own single-element sibling list so
   // buildSegment never appends :nth for it.
-  walkDom(domTreeJson.tree, '', [domTreeJson.tree], results)
+  walkDom(parsed.tree, '', [parsed.tree], results)
 
   // Filter: drop tiny nodes (likely decorative) and any residual skip-tags
   const filtered = results.filter(n =>
@@ -297,14 +340,37 @@ function compressNode(node) {
  *   unmatched: string[]
  * }>}
  */
-export async function matchElements(figmaNamedElements, domTreeJson, geminiApiKey, elementPickerJson = null, confidenceThreshold = 'balanced') {
+export async function matchElements(
+  figmaNamedElements,
+  domTreeJson,
+  geminiApiKey,
+  elementPickerJson = null,
+  confidenceThreshold = 'balanced',
+  figmaFileKey = null, // REDUCTION 1: cache key parameter
+  nodeId = null        // REDUCTION 1: cache key parameter
+) {
   const empty = { matches: [], unmatched: [] }
 
   if (!figmaNamedElements?.length) return empty
 
+  // Parse raw JSON strings — analysisService passes computedStylesJson as a string
+  const parsedDomTree = typeof domTreeJson === 'string'
+    ? (() => { try { return JSON.parse(domTreeJson) } catch { return null } })()
+    : domTreeJson
+  const parsedPickerTree = typeof elementPickerJson === 'string'
+    ? (() => { try { return JSON.parse(elementPickerJson) } catch { return null } })()
+    : elementPickerJson
+
   // Use element picker as primary DOM if page-level DOM not provided
-  const primaryDomTree = domTreeJson || elementPickerJson
-  if (!primaryDomTree)             return empty
+  const primaryDomTree = parsedDomTree || parsedPickerTree
+  if (!primaryDomTree) return empty
+
+  // REDUCTION 1: Check cache before running expensive Gemini call
+  if (figmaFileKey && nodeId) {
+    const cacheKey = getCacheKey(figmaFileKey, nodeId, primaryDomTree, figmaNamedElements)
+    const cached = getCachedMatch(cacheKey)
+    if (cached) return cached
+  }
 
   // --- Define confidence level filtering ---
   const CONFIDENCE_LEVELS = {
@@ -319,7 +385,7 @@ export async function matchElements(figmaNamedElements, domTreeJson, geminiApiKe
   if (!flatNodes.length) return empty
 
   // --- Step 2: Extract viewport ---
-  const vp = domTreeJson.viewport ?? {}
+  const vp = parsedDomTree?.viewport ?? {}
   const viewport = {
     w: vp.width ?? vp.w ?? 0,
     h: vp.height ?? vp.h ?? 0,
@@ -331,11 +397,11 @@ export async function matchElements(figmaNamedElements, domTreeJson, geminiApiKe
   // --- Step 4: Initialize Gemini client with fallback models ---
   const client = new GoogleGenerativeAI(geminiApiKey)
 
-  // Helper: call Gemini with retry + model fallback on 503
+  // Helper: call Gemini with retry + model fallback on 503 (but NOT on 429/quota)
   async function callGeminiWithRetry(prompt) {
     const MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
     const MAX_RETRIES = 2
-    const RETRY_DELAY_MS = 3000
+    const RETRY_DELAYS = [2000, 4000] // exponential backoff: 2s, 4s
 
     for (const modelName of MODELS) {
       const model = client.getGenerativeModel({
@@ -352,18 +418,40 @@ export async function matchElements(figmaNamedElements, domTreeJson, geminiApiKe
           const text = response.response.text()
           return JSON.parse(text)
         } catch (err) {
-          const is503 = err.message?.includes('503') || err.message?.includes('Service Unavailable') || err.message?.includes('high demand')
+          // PART 1 FIX: Classify error and handle each type appropriately
+          const msg = err.message ?? ''
+          const is429 = msg.includes('429') || msg.includes('quota') || msg.includes('rate limit') || msg.includes('exceeds') || msg.includes('Quota exceeded')
+          const is503 = msg.includes('503') || msg.includes('Service Unavailable') || msg.includes('high demand')
+          const is400 = msg.includes('400') || msg.includes('Invalid')
+          const isNetworkError = msg.includes('ECONNRESET') || msg.includes('timeout') || msg.includes('ENOTFOUND')
+
+          // On 429 (quota/rate limit): NEVER retry, NEVER fall through to next model
+          // A 429 means the entire project quota is exhausted — every model shares it.
+          if (is429) {
+            throw new Error('Gemini quota reached. Please wait a few minutes and try again.')
+          }
+
+          // On 400 (bad request): NEVER retry — it's a malformed request
+          if (is400) {
+            console.error(`[matchService] Gemini 400 Bad Request on ${modelName} (attempt ${attempt + 1}): ${msg}`)
+            throw new Error(`Gemini request failed: ${msg}`)
+          }
+
+          // On 503 (server error) or network issues: retry with exponential backoff
           const isLast = attempt === MAX_RETRIES
-          if (is503 && !isLast) {
-            console.warn(`[matchService] Gemini ${modelName} 503, retrying in ${RETRY_DELAY_MS}ms (attempt ${attempt + 1}/${MAX_RETRIES})`)
-            await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
+          if ((is503 || isNetworkError) && !isLast) {
+            const delayMs = RETRY_DELAYS[attempt] ?? RETRY_DELAYS[RETRY_DELAYS.length - 1]
+            console.warn(`[matchService] Gemini ${modelName} ${is503 ? '503' : 'network error'}, retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`)
+            await new Promise(r => setTimeout(r, delayMs))
             continue
           }
-          if (is503) {
-            console.warn(`[matchService] Gemini ${modelName} still 503 after ${MAX_RETRIES} retries, trying next model`)
+          if (is503 || isNetworkError) {
+            console.warn(`[matchService] Gemini ${modelName} still failing after ${MAX_RETRIES} retries, trying next model`)
             break // try next model
           }
-          throw err // non-503 error — propagate immediately
+
+          // Unknown error — propagate immediately
+          throw err
         }
       }
     }
@@ -380,11 +468,11 @@ You will be given:
 Your job is to match each Figma element to the most likely corresponding DOM node.
 
 Match based on:
+- Text content (PRIMARY for text-bearing elements like headings, buttons, labels): A Figma element named "Title" showing text "Approval Matrix" should match a DOM node whose textContent contains "Approval Matrix"
 - Visual role (a button labeled "Create Job" in Figma matches a button with text "Create Job" in DOM)
 - Structural position (a top-navigation element in Figma matches a DOM node with a small y rect value)
 - Visual properties (similar background color, border-radius, size)
 - Dimensional fit (for container elements like bars/headers/panels, prefer the element whose width and height most closely match the Figma element)
-- Text content where available
 
 Rules:
 - Only return matches you are confident about
@@ -426,6 +514,14 @@ The confidence level will be used to filter matches based on user settings.`
   // --- Step 6 & 7: Enrich matches with full DOM node data ---
   const nodeByPath  = new Map(flatNodes.map(n => [n.path, n]))
   const figmaByName = new Map(figmaNamedElements.map(e => [e.name, e]))
+
+  // STEP 2 DIAGNOSTIC: Compare Gemini's returned paths vs actual nodeByPath keys
+  console.log('=== MATCHER PATH DEBUG ===')
+  console.log('Gemini returned matches count:', geminiResult.matches?.length ?? 0)
+  console.log('Gemini returned unmatched count:', geminiResult.unmatched?.length ?? 0)
+  console.log('Paths Gemini returned:', (geminiResult.matches ?? []).map(m => m.domPath))
+  console.log('Sample paths in nodeByPath:', Array.from(nodeByPath.keys()).slice(0, 10))
+  console.log('=== END MATCHER PATH DEBUG ===')
 
   let matches = (geminiResult.matches ?? [])
     .map(m => {
@@ -588,8 +684,41 @@ The confidence level will be used to filter matches based on user settings.`
     }
   }
 
-  return {
+  // Write pairings to disk so they survive log buffer truncation
+  try {
+    const pairingDump = matches.map(m => ({
+      figmaName:       m.figmaName,
+      figmaType:       m.figmaElement?.type,
+      domPath:         m.domPath,
+      domTag:          m.domNode?.tag,
+      domClasses:      m.domNode?.classes,
+      domRect:         m.domNode?.rect,
+      confidence:      m.confidence,
+      reasoning:       m.reasoning,
+      domPaddingValues: {
+        top:    m.domNode?.styles?.paddingTop,
+        right:  m.domNode?.styles?.paddingRight,
+        bottom: m.domNode?.styles?.paddingBottom,
+        left:   m.domNode?.styles?.paddingLeft,
+      },
+    }))
+    writeFileSync('/tmp/pairings.json', JSON.stringify(pairingDump, null, 2))
+    console.log(`[matchService] Pairings written to /tmp/pairings.json (${matches.length} matches)`)
+  } catch (writeErr) {
+    console.warn('[matchService] Could not write pairings file:', writeErr.message)
+  }
+
+  const result = {
     matches,
     unmatched,
   }
+
+  // REDUCTION 1: Cache the result for 1 hour
+  if (figmaFileKey && nodeId) {
+    const cacheKey = getCacheKey(figmaFileKey, nodeId, primaryDomTree, figmaNamedElements)
+    setCachedMatch(cacheKey, result)
+    console.log('[matchService] Match result cached (1 hour TTL)')
+  }
+
+  return result
 }

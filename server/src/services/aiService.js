@@ -165,13 +165,24 @@ function classifyError(err) {
   const msg = err.message ?? ''
   const lower = msg.toLowerCase()
 
+  // On 429: quota exceeded — do NOT retry, do NOT fall through to alternatives
   if (
     msg.includes('429') ||
-    lower.includes('rate limit') ||
-    lower.includes('quota') ||
+    lower.includes('quota exceeded') ||
+    lower.includes('exceeds') ||
     lower.includes('resource exhausted')
   ) {
-    return new Error('Analysis limit reached. Please try again in a minute.')
+    return new Error('Gemini quota reached. Please wait a few minutes and try again.')
+  }
+
+  // On other rate limits (too-many-requests, etc.)
+  if (lower.includes('rate limit') || lower.includes('too many requests')) {
+    return new Error('Gemini rate limit reached. Please wait and try again.')
+  }
+
+  // On 503 or server errors: these are usually transient
+  if (msg.includes('503') || lower.includes('service unavailable')) {
+    return new Error('AI service temporarily unavailable. Please try again in a moment.')
   }
 
   return new Error(`AI comparison failed: ${msg}`)

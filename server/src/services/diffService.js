@@ -195,52 +195,28 @@ export function computePropertyDiff(match) {
   const skipSpacingComparisons = !hasComputedStyles
 
   // --- Color comparison ---
-  // PART 3 FIX: Handle VECTOR/icon elements specially
-  if (figma.fills && figma.fills.length > 0) {
+  // Skip color comparison for VECTOR/icon elements.
+  // SVG icon fill colors come from fill attributes (not CSS styles) that the bookmarklet
+  // cannot read reliably. Comparing container's CSS color property against Figma icon fill
+  // produces false positives. Icons render correctly in build despite color style mismatch.
+  if (figma.type !== 'VECTOR' && figma.fills && figma.fills.length > 0) {
     const figmaColor = figma.fills[0]  // first fill
 
-    // For vector/icon elements, compare against color/fill property, NOT backgroundColor
-    let domColor = null
-    if (figma.type === 'VECTOR') {
-      // Icons get their color from the 'color' property or fill property
-      domColor = dom.styles?.color
-      // If no color property, skip comparison (don't compare to backgroundColor for icons)
-      if (!domColor) {
-        // Icon has no color property to compare against — skip this comparison
-      } else {
-        const colorDiff = compareColors(figmaColor, domColor)
-        if (colorDiff) {
-          // PART 2 FIX: Show both hex codes in description
-          const description = `Icon fill: design ${figmaColor}, build ${domColor}`
-          issues.push({
-            property: 'color',
-            figmaValue: figmaColor,
-            domValue: domColor,
-            delta: colorDiff.delta,
-            description,
-            category: 'color',
-            severity: colorDiff.severity,
-          })
-        }
-      }
-    } else {
-      // Non-icon elements: compare against backgroundColor
-      const domBg = dom.styles?.backgroundColor
-      if (figmaColor && domBg) {
-        const colorDiff = compareColors(figmaColor, domBg)
-        if (colorDiff) {
-          // PART 2 FIX: Show both hex codes in description
-          const description = `Background color: design ${figmaColor}, build ${domBg}`
-          issues.push({
-            property: 'backgroundColor',
-            figmaValue: figmaColor,
-            domValue: domBg,
-            delta: colorDiff.delta,
-            description,
-            category: 'color',
-            severity: colorDiff.severity,
-          })
-        }
+    // Non-icon elements: compare backgroundColor.
+    const rawDomBg = dom.styles?.backgroundColor
+    if (figmaColor && rawDomBg) {
+      const colorDiff = compareColors(figmaColor, rawDomBg)
+      if (colorDiff) {
+        const domBgHex = rgbStringToHex(rawDomBg) ?? rawDomBg
+        issues.push({
+          property:   'backgroundColor',
+          figmaValue: figmaColor,
+          domValue:   domBgHex,
+          delta:      colorDiff.delta,
+          description: `Background color: design ${figmaColor}, build ${domBgHex}`,
+          category:   'color',
+          severity:   colorDiff.severity,
+        })
       }
     }
   }
@@ -313,7 +289,22 @@ export function computePropertyDiff(match) {
 
   // --- Spacing: padding ---
   // PART 2 FIX: Only generate padding issues if we have real computed styles
-  if (!skipSpacingComparisons) {
+  // FIX 4: Skip padding comparison when DOM has 0px on all sides AND Figma element
+  // has children — this is the "delegated spacing" pattern where the implementation
+  // moves padding to child elements via utility classes. Visual result is identical.
+  const domPaddingAllZero = (
+    (dom.styles?.paddingTop    || '0px') === '0px' &&
+    (dom.styles?.paddingRight  || '0px') === '0px' &&
+    (dom.styles?.paddingBottom || '0px') === '0px' &&
+    (dom.styles?.paddingLeft   || '0px') === '0px'
+  )
+  // Container types in Figma delegate padding to child elements in implementation.
+  // namedElements doesn't carry a children array, so use type as proxy.
+  const FIGMA_CONTAINER_TYPES = new Set(['FRAME', 'INSTANCE', 'COMPONENT', 'GROUP', 'COMPONENT_SET'])
+  const figmaIsContainer = FIGMA_CONTAINER_TYPES.has(figma.type)
+  const skipPaddingDelegation = domPaddingAllZero && figmaIsContainer
+
+  if (!skipSpacingComparisons && !skipPaddingDelegation) {
     for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
     const figmaProp = `padding${side}`
     const domProp = `padding${side}`
@@ -391,7 +382,7 @@ export function computePropertyDiff(match) {
           figmaValue: `${figmaRadius}px`,
           domValue: `${domRadius}px`,
           delta: `${delta > 0 ? '+' : ''}${(domRadius - figmaRadius).toFixed(1)}px`,
-          category: 'radius',
+          category: 'layout',
           severity: 'major',
         })
       } else if (delta > 2) {
@@ -400,7 +391,7 @@ export function computePropertyDiff(match) {
           figmaValue: `${figmaRadius}px`,
           domValue: `${domRadius}px`,
           delta: `${delta > 0 ? '+' : ''}${(domRadius - figmaRadius).toFixed(1)}px`,
-          category: 'radius',
+          category: 'layout',
           severity: 'minor',
         })
       }

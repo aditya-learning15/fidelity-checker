@@ -143,17 +143,28 @@ const GENERIC = /^(Rectangle|Frame|Group|Vector|Ellipse|Line|Polygon|Star|Image)
 const PRESERVE = /card|title|job|button|label|input|tag|icon|nav|bar/i
 
 /** Depth-first walk that collects up to `limit` named elements. */
-function walkNamedElements(node, results, limit, depth = 0, maxDepth = 4) {
-  if (!node || typeof node !== 'object' || results.length >= limit || depth > maxDepth) return
+function walkNamedElements(node, results, limit, depth = 0) {
+  const STRUCTURAL_MAX_DEPTH = 4  // structural containers extracted up to here
+  const TEXT_MAX_DEPTH       = 8  // text nodes extracted up to here (hard ceiling)
+
+  if (!node || typeof node !== 'object' || results.length >= limit) return
+  if (depth > TEXT_MAX_DEPTH) return  // hard ceiling for all nodes
 
   // Skip hidden layers (only if explicitly marked as visible: false)
   if (node.visible === false) return
+
+  const isTextNode = node.type === 'TEXT'
+
+  // Selective depth: structural nodes stop being extracted past depth 4,
+  // but we continue RECURSING through them to find TEXT children deeper.
+  // TEXT nodes (like the "Title" at depth 5) are extracted up to depth 8.
+  const shouldExtract = isTextNode ? depth <= TEXT_MAX_DEPTH : depth <= STRUCTURAL_MAX_DEPTH
 
   const name = (node.name ?? '').trim()
 
   // Extract named elements from any type, including GROUP and COMPONENT_SET
   // These types can contain meaningful child elements (Job Title, Job ID, etc.)
-  if (name && (!GENERIC.test(name) || PRESERVE.test(name))) {
+  if (shouldExtract && name && (!GENERIC.test(name) || PRESERVE.test(name))) {
     const el = { name, type: node.type ?? 'UNKNOWN' }
 
     // Solid fill colors
@@ -209,17 +220,16 @@ function walkNamedElements(node, results, limit, depth = 0, maxDepth = 4) {
     results.push(el)
   }
 
-  // Recurse into children of container types only (skip VECTOR, RECTANGLE, etc.)
-  // This avoids wasting extraction slots on non-container decorative elements
-  // Container types include: FRAME, INSTANCE, COMPONENT, GROUP, COMPONENT_SET, BOOLEAN_OPERATION
+  // Recurse into children of container types.
+  // IMPORTANT: always recurse even past STRUCTURAL_MAX_DEPTH — we may need to
+  // descend through deep structural containers to reach TEXT leaf nodes.
+  // The TEXT_MAX_DEPTH hard ceiling stops runaway recursion.
   if (Array.isArray(node.children)) {
     const containerTypes = new Set(['FRAME', 'INSTANCE', 'COMPONENT', 'GROUP', 'COMPONENT_SET', 'BOOLEAN_OPERATION', 'SYMBOL'])
-    
-    // Always recurse for certain types, or recurse for any node to ensure we find all named children
     if (node.type && containerTypes.has(node.type)) {
       for (const child of node.children) {
         if (results.length >= limit) break
-        walkNamedElements(child, results, limit, depth + 1, maxDepth)
+        walkNamedElements(child, results, limit, depth + 1)
       }
     }
   }
@@ -255,7 +265,10 @@ function walkNamedElements(node, results, limit, depth = 0, maxDepth = 4) {
  */
 export function extractNamedElements(figmaNodeJson) {
   const results = []
-  walkNamedElements(figmaNodeJson, results, 150)
+  // Cap at 60: structural elements (≤depth 4) + deep TEXT elements (≤depth 8).
+  // Higher caps caused matcher flooding in earlier experiments (150 → 4 matches).
+  walkNamedElements(figmaNodeJson, results, 60)
+  console.log(`[tokenService] extractNamedElements: ${results.length} elements extracted`)
   return results
 }
 

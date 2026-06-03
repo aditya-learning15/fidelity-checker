@@ -52,6 +52,7 @@ router.post('/', (req, res) => {
 
     try {
       const { figmaUrl, figmaToken, computedStyles, confidenceThreshold } = req.body
+      console.log('[route] /api/analyze — computedStyles received:', !!computedStyles, computedStyles ? `(${computedStyles.length} chars)` : '(none)')
 
       // --- field validation ---
       if (!figmaToken || !figmaToken.trim()) {
@@ -86,6 +87,24 @@ router.post('/', (req, res) => {
         exportFigmaFrameAsPng(fileKey, nodeId, figmaToken),
       ])
 
+      // --- Extract capture context from computedStyles ---
+      let captureContext = null
+      if (computedStyles) {
+        try {
+          const parsed = JSON.parse(computedStyles)
+          if (parsed.captureContext) {
+            const { zoomRatio, devicePixelRatio } = parsed.captureContext
+            captureContext = {
+              devicePixelRatio,
+              zoomRatio,
+              likelyZoomed: Math.abs(zoomRatio - 1) > 0.1 || (Math.abs(devicePixelRatio - 1) > 0.05 && Math.abs(devicePixelRatio - 2) > 0.05),
+            }
+          }
+        } catch (e) {
+          // Ignore parse errors
+        }
+      }
+
       // --- run the full three-pass analysis ---
       const report = await runFullAnalysis({
         figmaBuffer,
@@ -95,6 +114,14 @@ router.post('/', (req, res) => {
         confidenceThreshold: threshold,
         figmaFileKey: fileKey,
       })
+
+      // --- Add capture context warning to report ---
+      if (captureContext) {
+        report.captureContext = captureContext
+        if (captureContext.likelyZoomed) {
+          report.captureWarning = 'Computed styles were captured at a non-standard zoom level. Font and spacing measurements may be inaccurate. Re-capture at 100% browser zoom for reliable results.'
+        }
+      }
 
       return res.json(report)
     } catch (serviceErr) {
@@ -192,12 +219,15 @@ router.post('/enrich', async (req, res) => {
     const namedElements = extractNamedElements(figmaNodeJson)
 
     // Run matching with element picker data
+    // REDUCTION 3: Pass cache parameters to reuse match results from full analysis
     const matchResult = await matchElements(
       namedElements,
       null,
       process.env.GEMINI_API_KEY,
       elementPickerData,
-      threshold
+      threshold,
+      fileKey,  // figmaFileKey for cache
+      nodeId    // nodeId for cache
     )
 
     if (!matchResult.matches || matchResult.matches.length === 0) {
