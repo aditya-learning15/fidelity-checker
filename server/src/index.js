@@ -16,6 +16,15 @@ const PORT = process.env.PORT || 3001
 app.use(cors())
 app.use(express.json())
 
+// FIX D: Set 90s request timeout as safety net
+// Primary control is 30s Gemini timeout + fail-fast retry logic.
+// This catches runaway requests and prevents Fly.io auto-stop mid-flight.
+app.use((req, res, next) => {
+  req.setTimeout(90000)  // 90 seconds
+  res.setTimeout(90000)
+  next()
+})
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' })
 })

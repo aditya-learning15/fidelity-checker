@@ -265,9 +265,10 @@ function walkNamedElements(node, results, limit, depth = 0) {
  */
 export function extractNamedElements(figmaNodeJson) {
   const results = []
-  // Cap at 60: structural elements (≤depth 4) + deep TEXT elements (≤depth 8).
-  // Higher caps caused matcher flooding in earlier experiments (150 → 4 matches).
-  walkNamedElements(figmaNodeJson, results, 60)
+  // Cap at 45: structural elements (≤depth 4) + deep TEXT elements (≤depth 8).
+  // 60 was too many — caused Gemini timeouts (4+ min response time → 503).
+  // 45 keeps the prompt lean while still capturing key TEXT nodes like "Title".
+  walkNamedElements(figmaNodeJson, results, 45)
   console.log(`[tokenService] extractNamedElements: ${results.length} elements extracted`)
   return results
 }

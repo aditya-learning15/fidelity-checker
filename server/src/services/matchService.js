@@ -397,11 +397,15 @@ export async function matchElements(
   // --- Step 4: Initialize Gemini client with fallback models ---
   const client = new GoogleGenerativeAI(geminiApiKey)
 
-  // Helper: call Gemini with retry + model fallback on 503 (but NOT on 429/quota)
+  // Helper: call Gemini with timeout + minimal retry on 503
   async function callGeminiWithRetry(prompt) {
+    const GEMINI_TIMEOUT_MS = 30000  // FIX A: Hard 30s timeout per call
     const MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
-    const MAX_RETRIES = 2
-    const RETRY_DELAYS = [2000, 4000] // exponential backoff: 2s, 4s
+    const MAX_RETRIES = 1  // FIX B: Only 1 retry on 503, not 2
+    const RETRY_DELAY_MS = 3000  // FIX B: 3s wait before retry only
+
+    // FIX C: Log prompt size for diagnostic
+    console.log(`[matchService] Gemini prompt size: ${prompt.length} chars`)
 
     for (const modelName of MODELS) {
       const model = client.getGenerativeModel({
@@ -414,37 +418,51 @@ export async function matchElements(
 
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
-          const response = await model.generateContent(prompt)
-          const text = response.response.text()
+          // FIX A: Wrap Gemini call in 30s timeout
+          const result = await Promise.race([
+            model.generateContent(prompt),
+            new Promise((_, reject) =>
+              setTimeout(
+                () => reject(new Error('Gemini timeout after 30s')),
+                GEMINI_TIMEOUT_MS
+              )
+            ),
+          ])
+          const text = result.response.text()
           return JSON.parse(text)
         } catch (err) {
-          // PART 1 FIX: Classify error and handle each type appropriately
           const msg = err.message ?? ''
           const is429 = msg.includes('429') || msg.includes('quota') || msg.includes('rate limit') || msg.includes('exceeds') || msg.includes('Quota exceeded')
           const is503 = msg.includes('503') || msg.includes('Service Unavailable') || msg.includes('high demand')
           const is400 = msg.includes('400') || msg.includes('Invalid')
           const isNetworkError = msg.includes('ECONNRESET') || msg.includes('timeout') || msg.includes('ENOTFOUND')
+          const isTimeout = msg.includes('Gemini timeout')
 
           // On 429 (quota/rate limit): NEVER retry, NEVER fall through to next model
-          // A 429 means the entire project quota is exhausted — every model shares it.
           if (is429) {
             throw new Error('Gemini quota reached. Please wait a few minutes and try again.')
           }
 
-          // On 400 (bad request): NEVER retry — it's a malformed request
+          // On 400 (bad request): NEVER retry
           if (is400) {
-            console.error(`[matchService] Gemini 400 Bad Request on ${modelName} (attempt ${attempt + 1}): ${msg}`)
+            console.error(`[matchService] Gemini 400 on ${modelName}: ${msg}`)
             throw new Error(`Gemini request failed: ${msg}`)
           }
 
-          // On 503 (server error) or network issues: retry with exponential backoff
+          // On timeout: fail fast, don't retry
+          if (isTimeout) {
+            console.error(`[matchService] Gemini timeout on ${modelName}, failing immediately`)
+            throw new Error('Gemini is taking too long to respond. Please try again.')
+          }
+
+          // FIX B: On 503, only retry once with 3s wait
           const isLast = attempt === MAX_RETRIES
           if ((is503 || isNetworkError) && !isLast) {
-            const delayMs = RETRY_DELAYS[attempt] ?? RETRY_DELAYS[RETRY_DELAYS.length - 1]
-            console.warn(`[matchService] Gemini ${modelName} ${is503 ? '503' : 'network error'}, retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`)
-            await new Promise(r => setTimeout(r, delayMs))
+            console.warn(`[matchService] Gemini ${modelName} ${is503 ? '503' : 'network error'}, retrying in ${RETRY_DELAY_MS}ms (attempt ${attempt + 1}/${MAX_RETRIES})`)
+            await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
             continue
           }
+
           if (is503 || isNetworkError) {
             console.warn(`[matchService] Gemini ${modelName} still failing after ${MAX_RETRIES} retries, trying next model`)
             break // try next model
@@ -455,7 +473,8 @@ export async function matchElements(
         }
       }
     }
-    throw new Error('All Gemini models unavailable (503). Please try again later.')
+    // FIX B: Fail fast after trying all models, no further retries
+    throw new Error('Gemini is temporarily overloaded. Please try again in a moment.')
   }
 
   // --- Step 5: Call Gemini for page-level matching ---

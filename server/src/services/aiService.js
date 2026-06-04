@@ -235,8 +235,19 @@ export async function runAIComparison(figmaBuffer, screenshotBuffer, namedElemen
   ]
 
   let result
+  const GEMINI_TIMEOUT_MS = 30000  // FIX A: Hard 30s timeout
   try {
-    result = await model.generateContent(parts)
+    console.log(`[aiService] Vision call prompt size: ${JSON.stringify(parts).length} chars`)
+    // FIX A: Wrap Gemini vision call in 30s timeout
+    result = await Promise.race([
+      model.generateContent(parts),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error('Gemini timeout after 30s')),
+          GEMINI_TIMEOUT_MS
+        )
+      ),
+    ])
   } catch (err) {
     throw classifyError(err)
   }
