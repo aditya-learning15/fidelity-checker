@@ -12,8 +12,10 @@ function getModel() {
   if (!_client) {
     _client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
   }
+  // SWITCHED TO GEMINI 2.0 FLASH: faster than 2.5-flash, 1500 req/day free tier (vs 20)
+  // 2.5-flash is slower and has unusable 20 req/day quota.
   return _client.getGenerativeModel({
-    model: 'gemini-2.5-flash',
+    model: 'gemini-2.0-flash',
     generationConfig: {
       temperature: 0,
       topP: 1,
