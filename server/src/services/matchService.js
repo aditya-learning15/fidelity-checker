@@ -434,14 +434,20 @@ export async function matchElements(
           return JSON.parse(text)
         } catch (err) {
           const msg = err.message ?? ''
-          const is429 = msg.includes('429') || msg.includes('quota') || msg.includes('rate limit') || msg.includes('exceeds') || msg.includes('Quota exceeded')
-          const is503 = msg.includes('503') || msg.includes('Service Unavailable') || msg.includes('high demand')
+          // LOG RAW ERROR: so we can see exactly what Gemini returned (not our classified version)
+          console.error(`[matchService] RAW Gemini error on ${modelName} (attempt ${attempt}): ${msg}`)
+          if (err.status !== undefined) console.error(`[matchService] HTTP status: ${err.status}`)
+          if (err.errorDetails) console.error(`[matchService] errorDetails: ${JSON.stringify(err.errorDetails)}`)
+
+          const is429 = msg.includes('429') || msg.includes('quota') || msg.includes('rate limit') || msg.includes('exceeds') || msg.includes('Quota exceeded') || msg.includes('RESOURCE_EXHAUSTED')
+          const is503 = msg.includes('503') || msg.includes('Service Unavailable') || msg.includes('high demand') || msg.includes('overloaded')
           const is400 = msg.includes('400') || msg.includes('Invalid')
           const isNetworkError = msg.includes('ECONNRESET') || msg.includes('timeout') || msg.includes('ENOTFOUND')
           const isTimeout = msg.includes('Gemini timeout')
 
           // On 429 (quota/rate limit): NEVER retry, NEVER fall through to next model
           if (is429) {
+            console.error(`[matchService] Classified as 429/quota — stopping all retries`)
             throw new Error('Gemini quota reached. Please wait a few minutes and try again.')
           }
 
