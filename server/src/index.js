@@ -20,7 +20,7 @@ app.use(express.json())
 // Primary control is 30s Gemini timeout + fail-fast retry logic.
 // This catches runaway requests and prevents Fly.io auto-stop mid-flight.
 app.use((req, res, next) => {
-  req.setTimeout(90000)  // 90 seconds
+  req.setTimeout(90000)  // 90s safety net
   res.setTimeout(90000)
   next()
 })

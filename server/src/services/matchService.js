@@ -274,36 +274,29 @@ export function detectVirtualScrollComponents(domTreeJson, unmatchedFigmaNames =
 // ---------------------------------------------------------------------------
 
 /**
- * Build a lean, prompt-friendly representation of a flat node.
- * - Omits empty / null / zero fields (JSON.stringify drops undefined)
- * - Summarises four padding values into a single shorthand string
+ * Build a minimal prompt representation of a DOM node for matching only.
+ * The matcher only needs enough to PAIR elements — not the full style data.
+ * Full styles stay in the stored flatNodes for computePropertyDiff to use after matching.
+ *
+ * Sends ONLY: tag+classes, textContent (30 chars), w×h integers, backgroundColor, fontSize.
+ * Drops: path (long), x/y coords, fontWeight, borderRadius, padding, border, gap, display.
  */
-function compressNode(node) {
-  const { path, tag, classes, textContent, rect, styles } = node
+function compressNodeForPrompt(node) {
+  const { tag, classes, textContent, rect, styles } = node
 
-  const padParts = [
-    styles.paddingTop,
-    styles.paddingRight,
-    styles.paddingBottom,
-    styles.paddingLeft,
-  ]
-  const padding = padParts.every(v => !v || v === '0px')
-    ? undefined
-    : padParts.join(' ')
+  // Truncate classes to first two tokens to avoid bloat
+  const shortClass = classes
+    ? classes.split(/\s+/).slice(0, 2).join(' ')
+    : undefined
 
   return {
-    path,
     tag,
-    classes:     classes     || undefined,
-    textContent: textContent || undefined,
-    rect,
-    styles: {
-      backgroundColor: styles.backgroundColor || undefined,
-      fontSize:        styles.fontSize        || undefined,
-      fontWeight:      styles.fontWeight      || undefined,
-      borderRadius:    styles.borderRadius    || undefined,
-      padding,
-    },
+    classes:     shortClass || undefined,
+    text:        textContent ? textContent.slice(0, 30) : undefined,
+    w:           Math.round(rect.w),
+    h:           Math.round(rect.h),
+    bg:          styles.backgroundColor || undefined,
+    fontSize:    styles.fontSize        || undefined,
   }
 }
 
@@ -391,22 +384,21 @@ export async function matchElements(
     h: vp.height ?? vp.h ?? 0,
   }
 
-  // --- Step 3: Compress nodes for prompt ---
-  const compressedDomNodes = flatNodes.map(compressNode)
+  // --- Step 3: Compress nodes for prompt — top 35 by visual area only ---
+  // flatNodes is already sorted by area descending (see flattenDomTree).
+  // Take the top 35: small/nested nodes rarely match named Figma elements.
+  const promptDomNodes = flatNodes.slice(0, 35).map(compressNodeForPrompt)
 
   // --- Step 4: Initialize Gemini client with fallback models ---
   const client = new GoogleGenerativeAI(geminiApiKey)
 
   // Helper: call Gemini with timeout + minimal retry on 503
   async function callGeminiWithRetry(prompt) {
-    const GEMINI_TIMEOUT_MS = 30000  // FIX A: Hard 30s timeout per call
-    // Available models confirmed via ListModels on this API key (v1beta):
-    // - gemini-2.0-flash / gemini-2.0-flash-lite: limit:0 (project-level block on 2.0 family)
-    // - gemini-1.5-flash: 404 on v1beta
-    // - gemini-2.5-flash-lite: available, lighter/faster than 2.5-flash ← PRIMARY
-    // - gemini-2.5-flash: available but timed out at 30s with 29k prompts ← FALLBACK
-    // NOTE: 429 on one model falls through to next — each has independent quota
-    const MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash']
+    const GEMINI_TIMEOUT_MS = 30000  // 30s — small prompt should return in 2-5s on 2.5-flash
+    // gemini-2.5-flash confirmed working (1.3s for small prompt via curl test).
+    // gemini-2.0 family: limit:0 in this project. gemini-1.5-flash: 404 on v1beta.
+    // Fall through on 429 or timeout — each model has independent quota.
+    const MODELS = ['gemini-2.5-flash']
     const MAX_RETRIES = 1  // FIX B: Only 1 retry on 503, not 2
     const RETRY_DELAY_MS = 3000  // FIX B: 3s wait before retry only
 
@@ -462,10 +454,10 @@ export async function matchElements(
             throw new Error(`Gemini request failed: ${msg}`)
           }
 
-          // On timeout: fail fast, don't retry
+          // On timeout: fall through to next model (don't abort — next model may be faster)
           if (isTimeout) {
-            console.error(`[matchService] Gemini timeout on ${modelName}, failing immediately`)
-            throw new Error('Gemini is taking too long to respond. Please try again.')
+            console.error(`[matchService] Gemini timeout on ${modelName} — trying next model`)
+            break
           }
 
           // FIX B: On 503, only retry once with 3s wait
@@ -490,50 +482,33 @@ export async function matchElements(
     throw new Error('Gemini is temporarily overloaded. Please try again in a moment.')
   }
 
-  // --- Step 5: Call Gemini for page-level matching ---
-  const prompt = `You are a UI component matching engine.
+  // --- Step 5: Build minimal matching prompt ---
+  // Figma side: trim to 35 most significant elements, send only matching-relevant fields
+  const promptFigmaElements = figmaNamedElements.slice(0, 35).map(e => ({
+    name: e.name,
+    text: e.text ? String(e.text).slice(0, 30) : undefined,
+    w:    e.width  ? Math.round(e.width)  : undefined,
+    h:    e.height ? Math.round(e.height) : undefined,
+  }))
 
-You will be given:
-1. A list of named Figma design elements with their design-specified properties
-2. A list of DOM nodes extracted from the live implementation
+  // DOM side: nodes already sliced to top 35 by area. Use index (not path) to save chars —
+  // Gemini returns the index, we look up flatNodes[index] for the full node + path.
+  const promptDomNodesIndexed = promptDomNodes.map((n, i) => ({ i, ...n }))
 
-Your job is to match each Figma element to the most likely corresponding DOM node.
-
-Match based on:
-- Text content (PRIMARY for text-bearing elements like headings, buttons, labels): A Figma element named "Title" showing text "Approval Matrix" should match a DOM node whose textContent contains "Approval Matrix"
-- Visual role (a button labeled "Create Job" in Figma matches a button with text "Create Job" in DOM)
-- Structural position (a top-navigation element in Figma matches a DOM node with a small y rect value)
-- Visual properties (similar background color, border-radius, size)
-- Dimensional fit (for container elements like bars/headers/panels, prefer the element whose width and height most closely match the Figma element)
-
-Rules:
-- Only return matches you are confident about
-- One Figma element maps to at most one DOM node
-- It is fine to leave a Figma element unmatched if no good match exists
-- Do NOT guess — an unmatched element is better than a wrong match
-- For container elements (bars, headers, panels): match to the OUTER container, not inner children. Prefer dimensional fit.
+  const prompt = `Match Figma design elements to DOM nodes. Return JSON only.
 
 Figma elements:
-${JSON.stringify(figmaNamedElements, null, 2)}
+${JSON.stringify(promptFigmaElements)}
 
-DOM nodes:
-${JSON.stringify(compressedDomNodes, null, 2)}
+DOM nodes (use field "i" as the id to return):
+${JSON.stringify(promptDomNodesIndexed)}
 
-Return a JSON object ONLY, no preamble:
-{
-  "matches": [
-    {
-      "figmaName": "exact Figma layer name",
-      "domPath": "exact path string from the DOM nodes list",
-      "confidence": "high" | "medium" | "low",
-      "reasoning": "one sentence"
-    }
-  ],
-  "unmatched": ["figmaName1", "figmaName2"]
-}
+Rules: match by text content first, then dimensions (w×h), then background color. One Figma element → at most one DOM node. Omit uncertain matches.
 
-Include matches with any confidence level (high, medium, low).
-The confidence level will be used to filter matches based on user settings.`
+Return:
+{"matches":[{"figmaName":"...","domIndex":0,"confidence":"high"|"medium"|"low","reasoning":"one sentence"}],"unmatched":["figmaName1"]}`
+
+  console.log(`[matchService] Gemini prompt size: ${prompt.length} chars`)
 
   let geminiResult
   try {
@@ -544,25 +519,19 @@ The confidence level will be used to filter matches based on user settings.`
   }
 
   // --- Step 6 & 7: Enrich matches with full DOM node data ---
-  const nodeByPath  = new Map(flatNodes.map(n => [n.path, n]))
+  // Gemini now returns domIndex (integer) instead of domPath.
+  // Look up the full node from flatNodes by index, then get the path from the node.
   const figmaByName = new Map(figmaNamedElements.map(e => [e.name, e]))
 
-  // STEP 2 DIAGNOSTIC: Compare Gemini's returned paths vs actual nodeByPath keys
-  console.log('=== MATCHER PATH DEBUG ===')
-  console.log('Gemini returned matches count:', geminiResult.matches?.length ?? 0)
-  console.log('Gemini returned unmatched count:', geminiResult.unmatched?.length ?? 0)
-  console.log('Paths Gemini returned:', (geminiResult.matches ?? []).map(m => m.domPath))
-  console.log('Sample paths in nodeByPath:', Array.from(nodeByPath.keys()).slice(0, 10))
-  console.log('=== END MATCHER PATH DEBUG ===')
+  console.log(`[matchService] Gemini returned ${geminiResult.matches?.length ?? 0} matches, ${geminiResult.unmatched?.length ?? 0} unmatched`)
 
   let matches = (geminiResult.matches ?? [])
     .map(m => {
-      const domNode      = nodeByPath.get(m.domPath)
+      const domNode      = flatNodes[m.domIndex]
       const figmaElement = figmaByName.get(m.figmaName)
-      if (!domNode || !figmaElement) return null   // stale path/name — skip
+      if (!domNode || !figmaElement) return null   // bad index or unknown name — skip
 
-      // PART 2 FIX: Mark whether this node has real computed styles from bookmarklet
-      // Check if domNode has actual spacing/style values (from bookmarklet extraction)
+      // Mark whether this node has real computed styles from bookmarklet
       const hasComputedStyles = !!(
         domNode.styles && (
           domNode.styles.paddingTop ||
@@ -578,12 +547,12 @@ The confidence level will be used to filter matches based on user settings.`
         figmaName:    m.figmaName,
         figmaElement,
         domNode,
-        domPath:      m.domPath,
+        domPath:      domNode.path,   // full path from stored flatNode (not from prompt)
         confidence:   m.confidence,
         reasoning:    m.reasoning,
         viewport,
         source:       'page-level',
-        hasComputedStyles,  // true if this node has real computed styles
+        hasComputedStyles,
       }
     })
     .filter(Boolean)

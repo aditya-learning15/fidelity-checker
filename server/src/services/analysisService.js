@@ -370,7 +370,7 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
       try {
         // REDUCTION 1: Pass cache parameters to reuse match results within 1 hour
         const nodeId = figmaNodeJson?.id ?? null
-        console.log(`[${runId}] Calling matchElements (gemini-2.5-flash-lite → gemini-2.5-flash)`)
+        console.log(`[${runId}] Calling matchElements (gemini-2.5-flash, <8k prompt)`)
         matchResult = await matchElements(
           namedElements,
           computedStylesJson,
