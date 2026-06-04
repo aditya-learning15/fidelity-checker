@@ -400,9 +400,10 @@ export async function matchElements(
   // Helper: call Gemini with timeout + minimal retry on 503
   async function callGeminiWithRetry(prompt) {
     const GEMINI_TIMEOUT_MS = 30000  // FIX A: Hard 30s timeout per call
-    // SWITCHED TO GEMINI 2.0 FLASH: faster than 2.5-flash, 1500 req/day free tier (vs 20)
-    // 2.5-flash is slower and has unusable 20 req/day quota.
-    const MODELS = ['gemini-2.0-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash']
+    // PRIMARY: gemini-1.5-flash — confirmed free tier access in this project (1500 req/day)
+    // gemini-2.0-flash has limit:0 in this project (not exhausted — never allocated).
+    // gemini-2.5-flash has only 20 req/day and was timing out at 30s with 29k prompts.
+    const MODELS = ['gemini-1.5-flash', 'gemini-1.5-flash-latest']
     const MAX_RETRIES = 1  // FIX B: Only 1 retry on 503, not 2
     const RETRY_DELAY_MS = 3000  // FIX B: 3s wait before retry only
 
