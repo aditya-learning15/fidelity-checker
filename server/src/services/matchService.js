@@ -401,12 +401,12 @@ export async function matchElements(
   async function callGeminiWithRetry(prompt) {
     const GEMINI_TIMEOUT_MS = 30000  // FIX A: Hard 30s timeout per call
     // Available models confirmed via ListModels on this API key (v1beta):
-    // - gemini-1.5-flash: NOT available (404 on v1beta)
-    // - gemini-2.0-flash: available but limit:0 quota in this project
-    // - gemini-2.0-flash-lite: available, lighter/faster, separate quota from 2.0-flash
-    // - gemini-2.5-flash-lite: available, lighter/faster than 2.5-flash
-    // - gemini-2.5-flash: available but timed out at 30s with 29k prompts
-    const MODELS = ['gemini-2.0-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.5-flash']
+    // - gemini-2.0-flash / gemini-2.0-flash-lite: limit:0 (project-level block on 2.0 family)
+    // - gemini-1.5-flash: 404 on v1beta
+    // - gemini-2.5-flash-lite: available, lighter/faster than 2.5-flash ← PRIMARY
+    // - gemini-2.5-flash: available but timed out at 30s with 29k prompts ← FALLBACK
+    // NOTE: 429 on one model falls through to next — each has independent quota
+    const MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash']
     const MAX_RETRIES = 1  // FIX B: Only 1 retry on 503, not 2
     const RETRY_DELAY_MS = 3000  // FIX B: 3s wait before retry only
 
@@ -449,10 +449,11 @@ export async function matchElements(
           const isNetworkError = msg.includes('ECONNRESET') || msg.includes('timeout') || msg.includes('ENOTFOUND')
           const isTimeout = msg.includes('Gemini timeout')
 
-          // On 429 (quota/rate limit): NEVER retry, NEVER fall through to next model
+          // On 429: each model has independent quota in this project (2.0-family has limit:0,
+          // 2.5-family has actual quota). Fall through to next model rather than aborting.
           if (is429) {
-            console.error(`[matchService] Classified as 429/quota — stopping all retries`)
-            throw new Error('Gemini quota reached. Please wait a few minutes and try again.')
+            console.error(`[matchService] 429 on ${modelName} — trying next model (independent quotas)`)
+            break  // skip remaining retries for this model, try next
           }
 
           // On 400 (bad request): NEVER retry

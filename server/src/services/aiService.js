@@ -12,10 +12,10 @@ function getModel() {
   if (!_client) {
     _client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
   }
-  // gemini-2.0-flash-lite: fastest available model with separate quota from gemini-2.0-flash
-  // gemini-2.0-flash has limit:0 in this project; gemini-1.5-flash is 404 on v1beta
+  // gemini-2.5-flash-lite: lighter/faster than 2.5-flash, same 2.5-family quota
+  // 2.0-family all have limit:0 in this project; 1.5-flash is 404 on v1beta
   return _client.getGenerativeModel({
-    model: 'gemini-2.0-flash-lite',
+    model: 'gemini-2.5-flash-lite',
     generationConfig: {
       temperature: 0,
       topP: 1,
