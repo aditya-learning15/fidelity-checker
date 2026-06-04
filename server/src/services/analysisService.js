@@ -330,20 +330,16 @@ function computeScores(diffResult, aiResult, allIssues = []) {
  * }>}
  */
 export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNodeJson, computedStylesJson, confidenceThreshold = 'balanced', figmaFileKey = null }) {
+  // --- Unique run marker — use this to identify runs in logs, never read stale lines ---
+  const runId = Math.random().toString(36).slice(2, 8)
+  const runStart = new Date().toISOString()
+  console.log(`=== ANALYSIS RUN ${runId} START ${runStart} ===`)
+
   // --- Generate session ID for this analysis run ---
   const sessionId = randomUUID()
 
   // DIAGNOSTIC: Check if bookmarklet data reached the backend
-  console.log('[analysisService] === ENTRY POINT DEBUG ===')
-  console.log('[analysisService] computedStylesJson received:', !!computedStylesJson)
-  if (computedStylesJson) {
-    try {
-      const parsed = typeof computedStylesJson === 'string' ? JSON.parse(computedStylesJson) : computedStylesJson
-      console.log('[analysisService] computedStylesJson is valid, tree present:', !!parsed?.tree)
-    } catch (e) {
-      console.log('[analysisService] computedStylesJson parse error:', e.message)
-    }
-  }
+  console.log(`[${runId}] computedStylesJson received: ${!!computedStylesJson}`)
 
   // --- Load feedback patterns from previous user corrections (scoped to this file) ---
   const feedbackPatterns = await loadFeedbackPatterns(figmaFileKey || 'unknown')
@@ -374,6 +370,7 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
       try {
         // REDUCTION 1: Pass cache parameters to reuse match results within 1 hour
         const nodeId = figmaNodeJson?.id ?? null
+        console.log(`[${runId}] Calling matchElements (gemini-1.5-flash)`)
         matchResult = await matchElements(
           namedElements,
           computedStylesJson,
@@ -391,47 +388,21 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
         }
       } catch (matchErr) {
         // Non-fatal — element matching is optional enhancement
-        console.warn('[analysisService] Element matching failed:', matchErr.message)
+        console.warn(`[${runId}] Element matching failed: ${matchErr.message}`)
       }
     } catch (err) {
       // Non-fatal — computed styles are optional; log and continue
       console.warn('[analysisService] Could not parse computed styles:', err.message)
     }
 
-    // DIAGNOSTIC: Full arithmetic pipeline verification
-    console.log('=== ARITHMETIC PIPELINE DEBUG ===')
-    console.log('namedElements count:', namedElements.length)
-    console.log('matchResult.matches count:', matchResult?.matches?.length ?? 'NO MATCH RESULT')
-    console.log('matchResult.unmatched count:', matchResult?.unmatched?.length ?? 0)
-
-    // Step A: Show first 5 matches — figmaName, domPath, confidence, reasoning
-    console.log('--- Match pairings (first 5) ---')
-    if (matchResult?.matches?.length > 0) {
+    // Arithmetic pipeline summary
+    const matchCount = matchResult?.matches?.length ?? 0
+    console.log(`[${runId}] matchElements → ${matchCount} matches, ${matchResult?.unmatched?.length ?? 0} unmatched`)
+    if (matchCount > 0) {
       matchResult.matches.slice(0, 5).forEach((m, i) => {
-        console.log(`Pairing ${i}: "${m.figmaName}" → "${m.domPath}"`, {
-          confidence: m.confidence,
-          reasoning:  m.reasoning,
-        })
+        console.log(`[${runId}] match[${i}]: "${m.figmaName}" → "${m.domPath}" (${m.confidence})`)
       })
     }
-
-    // Step B: Per-match diff output
-    console.log('--- Per-match diffs ---')
-    if (matchResult?.matches?.length > 0) {
-      matchResult.matches.forEach((m, i) => {
-        const diffs = computePropertyDiff(m)
-        console.log(`Match ${i}: ${m.figmaName}`, {
-          hasComputedStyles: !!m.domNode?.styles,
-          diffsGenerated:    diffs.length,
-          sampleDiff:        diffs[0]
-            ? { property: diffs[0].property ?? diffs[0].description,
-                figmaValue: diffs[0].figmaValue,
-                domValue:   diffs[0].domValue }
-            : null,
-        })
-      })
-    }
-    console.log('=== END ARITHMETIC DEBUG ===')
   }
 
   // --- Pass 2: Pixel diff ---
@@ -726,6 +697,10 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
   }
 
   // --- Assemble final report ---
+  const totalIssueCount = allIssues.length
+  console.log(`[${runId}] Total issues after all filters: ${totalIssueCount}`)
+  console.log(`=== ANALYSIS RUN ${runId} COMPLETE (${new Date().toISOString()}) ===`)
+
   return {
     sessionId,
     figmaFileKey,  // used when posting feedback to scope to this file
