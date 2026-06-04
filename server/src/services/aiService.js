@@ -12,11 +12,10 @@ function getModel() {
   if (!_client) {
     _client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
   }
-  // gemini-1.5-flash: confirmed free tier access in this project (1500 req/day)
-  // gemini-2.0-flash has limit:0 in this project (project-level block, not exhaustion)
-  // gemini-2.5-flash has only 20/day and was timing out at 30s
+  // gemini-2.0-flash-lite: fastest available model with separate quota from gemini-2.0-flash
+  // gemini-2.0-flash has limit:0 in this project; gemini-1.5-flash is 404 on v1beta
   return _client.getGenerativeModel({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-2.0-flash-lite',
     generationConfig: {
       temperature: 0,
       topP: 1,
