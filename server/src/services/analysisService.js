@@ -8,6 +8,26 @@ import { detectVirtualScrollComponents, matchElements } from './matchService.js'
 import { loadFeedbackPatterns, applyFeedbackFilters } from './feedbackService.js'
 
 // ---------------------------------------------------------------------------
+// Vision pass control
+// ---------------------------------------------------------------------------
+
+/**
+ * DISABLE_VISION: Set to true to skip the vision pass entirely.
+ * Vision (Gemini image comparison) was timing out at 30s and was the primary
+ * source of false positives in earlier testing. The tool now does deterministic
+ * arithmetic comparison on matched elements instead.
+ *
+ * When disabled:
+ * - Only 1 Gemini call per analysis (matching/arithmetic only)
+ * - No image processing overhead (faster, under 10s total)
+ * - No measurement guesses or phantom element claims
+ * - Report shows only concrete arithmetic issues with exact figmaValue + domValue
+ *
+ * If re-enabling later, increase timeout to 60s (images need processing time).
+ */
+const DISABLE_VISION = true
+
+// ---------------------------------------------------------------------------
 // Evidence-based filtering
 // ---------------------------------------------------------------------------
 
@@ -419,12 +439,16 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
   // are returned so we can reuse them for the AI pass (same dimensions).
   const diffResult = await runPixelDiff(figmaBuffer, screenshotBuffer)
 
-  // --- Pass 3: AI semantic comparison ---
-  // REDUCTION 2: Only run vision pass if there are unmatched elements
-  // If arithmetic covered everything, skip the expensive Gemini vision call
-  const hasUnmatchedElements = matchResult?.unmatched?.length > 0 ||
-                                (matchResult?.matches?.length ?? 0) < (namedElements?.length ?? 0)
-
+  // --- Pass 3: AI semantic comparison (DISABLED) ---
+  // Vision pass is disabled by default. It was timing out at 30s with image processing
+  // and was the primary source of false positives (measurement guesses, phantom elements,
+  // color misreads, state-mismatch flips). The tool now does deterministic arithmetic
+  // comparison on matched elements only.
+  //
+  // To re-enable in future:
+  // - Set DISABLE_VISION = false above
+  // - Increase vision timeout from 30s to 60s (image processing is slower)
+  // - Re-evaluate false-positive filters for vision issues
   let aiResult = {
     categories: {
       layout:     { score: 100, issues: [] },
@@ -432,21 +456,28 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
       typography: { score: 100, issues: [] },
       spacing:    { score: 100, issues: [] },
     },
-    overallSummary: 'Vision pass skipped — all elements matched via arithmetic',
+    overallSummary: 'Arithmetic analysis only (vision disabled)',
   }
 
-  if (hasUnmatchedElements) {
-    // Use aligned buffers so both images are the same size when sent to Gemini.
-    // Pass matched elements so AI won't generate false positive issues for already-verified elements.
-    aiResult = await runAIComparison(
-      diffResult.alignedFigmaBuffer,
-      diffResult.alignedScreenshotBuffer,
-      namedElements,
-      tokenDiff,    // null when not provided — aiService handles gracefully
-      matchedElements,  // null when no computed styles — aiService handles gracefully
-    )
+  if (!DISABLE_VISION) {
+    const hasUnmatchedElements = matchResult?.unmatched?.length > 0 ||
+                                  (matchResult?.matches?.length ?? 0) < (namedElements?.length ?? 0)
+
+    if (hasUnmatchedElements) {
+      // Use aligned buffers so both images are the same size when sent to Gemini.
+      // Pass matched elements so AI won't generate false positive issues for already-verified elements.
+      aiResult = await runAIComparison(
+        diffResult.alignedFigmaBuffer,
+        diffResult.alignedScreenshotBuffer,
+        namedElements,
+        tokenDiff,    // null when not provided — aiService handles gracefully
+        matchedElements,  // null when no computed styles — aiService handles gracefully
+      )
+    } else {
+      console.log('[analysisService] Skipping vision pass — all Figma elements matched via arithmetic')
+    }
   } else {
-    console.log('[analysisService] Skipping vision pass — all Figma elements matched via arithmetic')
+    console.log('[analysisService] Vision pass disabled (arithmetic comparison only)')
   }
 
   // --- Filter low-confidence issues ---
