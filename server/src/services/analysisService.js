@@ -529,6 +529,11 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
     const arithmeticSeen = new Set()
     const pairingReport  = []
 
+    // DIAGNOSTIC: Log all matched element names before diffing
+    console.log(`[${runId}] MATCHED (${candidateMatches.length}): ` +
+      candidateMatches.map(m =>
+        `${m.figmaName}->${m.domPath || 'idx'+m.domIndex}`).join(' | '))
+
     for (const match of candidateMatches) {
       // ── FIX 3: Dimensional sanity gate ──────────────────────────────────
       // If either dimension is more than 2× different, the pairing is implausible.
@@ -542,6 +547,10 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
           continue
         }
       }
+
+      // DIAGNOSTIC: Log every match entering the diff computation
+      console.log(`[${runId}] DIFFING: ${match.figmaName} | domTag=${match.domNode?.tag} | ` +
+        `figType=${match.figmaElement?.type} | hasStyles=${!!match.domNode?.styles}`)
 
       const isVectorType = match.figmaElement?.type === 'VECTOR'
       const diffs = computePropertyDiff(match)
@@ -577,6 +586,10 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
         const dedupKey = `${match.figmaName}::${diff.property ?? diff.description}`
         if (arithmeticSeen.has(dedupKey)) continue
         arithmeticSeen.add(dedupKey)
+
+        // DIAGNOSTIC: Log every issue as it's attributed
+        console.log(`[${runId}] ISSUE: element=${match.figmaName} | ` +
+          `${diff.property} fig=${diff.figmaValue} dom=${diff.domValue}`)
 
         categoriesAfterConfidence[cat] = {
           ...categoriesAfterConfidence[cat],
