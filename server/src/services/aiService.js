@@ -17,10 +17,13 @@ function getModel() {
   return _client.getGenerativeModel({
     model: 'gemini-2.5-flash-lite',
     generationConfig: {
-      temperature: 0,
+      temperature: 0.1,  // low — vision matching is deterministic
       topP: 1,
       topK: 1,
       responseMimeType: 'application/json',
+      thinkingConfig: {
+        thinkingBudget: 0  // disable thinking, respond directly
+      },
     },
   })
 }

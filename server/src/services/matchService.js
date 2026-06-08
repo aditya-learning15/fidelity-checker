@@ -409,8 +409,11 @@ export async function matchElements(
       const model = client.getGenerativeModel({
         model: modelName,
         generationConfig: {
-          temperature: 0,
+          temperature: 0.1,  // low — matching is deterministic
           responseMimeType: 'application/json',
+          thinkingConfig: {
+            thinkingBudget: 0  // disable thinking, respond directly (prevents 30s hangs)
+          },
         },
       })
 
