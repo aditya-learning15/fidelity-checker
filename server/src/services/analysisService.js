@@ -125,97 +125,6 @@ function isWhiteOrNeutral(hex) {
   return Math.max(r, g, b) - Math.min(r, g, b) < 40 && Math.max(r, g, b) > 170
 }
 
-// ---------------------------------------------------------------------------
-// Token mismatch → issue conversion
-// ---------------------------------------------------------------------------
-
-const TOKEN_TYPE_TO_CATEGORY = {
-  typography: 'typography',
-  spacing:    'spacing',
-  radius:     'spacing',
-  // color: intentionally excluded — color requires hex context and can be noisy globally
-}
-
-const SKIP_PROPERTIES = new Set([
-  'cornerRadius', 'borderRadius',  // pill-shape sentinel noise
-  'borderTopLeftRadius', 'borderTopRightRadius',
-  'borderBottomLeftRadius', 'borderBottomRightRadius',
-])
-
-/**
- * Convert tokenDiff.mismatches into report issues.
- * These are arithmetic issues with exact figmaValue + domValue pairs.
- * They do NOT require Gemini element matching — they come directly from
- * the token diff between Figma design tokens and computed browser styles.
- *
- * @param {object|null} tokenDiff - Output of diffTokenSets()
- * @returns {object[]} Issues in report format
- */
-function tokenMismatchesToIssues(tokenDiff) {
-  if (!tokenDiff?.mismatches?.length) return []
-
-  // STEP 1 DIAGNOSTIC: Inspect what mismatches actually contain
-  console.log('=== TOKEN DIFF INSPECTION ===')
-  console.log('Total mismatches:', tokenDiff.mismatches.length)
-  tokenDiff.mismatches.forEach((m, i) => {
-    console.log(`Mismatch ${i}:`, {
-      type:         m.type,
-      property:     m.property,
-      figmaValue:   m.figmaValue,
-      domValue:     m.computedValue,
-      delta:        m.delta,
-      figmaElement: m.nodeName ?? m.figmaNodeName ?? m.figmaElementName ?? 'UNKNOWN',
-      domElement:   m.domPath ?? m.nodeTag ?? m.domNodeName ?? 'UNKNOWN',
-    })
-  })
-  console.log('=== END TOKEN DIFF ===')
-
-  const issues = []
-  const seen = new Set()
-
-  for (const mismatch of tokenDiff.mismatches) {
-    const category = TOKEN_TYPE_TO_CATEGORY[mismatch.type]
-    if (!category) continue                           // skip color and unknown types
-    if (SKIP_PROPERTIES.has(mismatch.property)) continue  // skip noisy radius props
-
-    // Skip sub-pixel differences (rounding artefacts)
-    const delta = mismatch.delta ?? null
-    if (delta !== null && delta < 1) continue
-
-    // Deduplicate: same property + same value pair
-    const key = `${mismatch.property}:${mismatch.figmaValue}:${mismatch.computedValue}`
-    if (seen.has(key)) continue
-    seen.add(key)
-
-    // Severity from delta
-    let severity = 'major'
-    if (delta !== null) {
-      if (delta >= 8) severity = 'critical'
-      else if (delta >= 4) severity = 'major'
-      else severity = 'minor'
-    }
-
-    // Human-readable property label (camelCase → spaced words)
-    const propLabel = mismatch.property
-      .replace(/([A-Z])/g, ' $1')
-      .toLowerCase()
-      .trim()
-
-    issues.push({
-      severity,
-      confidence: 'high',
-      category,
-      description: `${propLabel}: design specifies ${mismatch.figmaValue}, build renders ${mismatch.computedValue}`,
-      figmaValue:  mismatch.figmaValue,
-      domValue:    mismatch.computedValue,
-      source:      'arithmetic',
-      suggestion:  `Set ${mismatch.property} to ${mismatch.figmaValue} to match the design spec`,
-    })
-  }
-
-  console.log(`[analysisService] tokenMismatchesToIssues: ${tokenDiff.mismatches.length} mismatches → ${issues.length} issues`)
-  return issues
-}
 
 // ---------------------------------------------------------------------------
 // Score computation
@@ -591,10 +500,12 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
         console.log(`[${runId}] ISSUE: element=${match.figmaName} | ` +
           `${diff.property} fig=${diff.figmaValue} dom=${diff.domValue}`)
 
+        const enriched = { ...diff, referencedElement: match.figmaName }
+
         categoriesAfterConfidence[cat] = {
           ...categoriesAfterConfidence[cat],
           issues: [...(categoriesAfterConfidence[cat].issues ?? []),
-            { ...diff, source: 'arithmetic' }],
+            enriched],
         }
         matchIssues.push({
           property:   diff.property,
@@ -713,6 +624,15 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
   const totalIssueCount = allIssues.length
   console.log(`[${runId}] Total issues after all filters: ${totalIssueCount}`)
   console.log(`=== ANALYSIS RUN ${runId} COMPLETE (${new Date().toISOString()}) ===`)
+
+  // --- Verify canonical issue shape (Step 6) ---
+  for (const issue of allIssues) {
+    const required = ['property', 'figmaValue', 'domValue', 'category', 'severity', 'description', 'referencedElement']
+    const missing = required.filter(k => issue[k] === undefined)
+    if (missing.length) {
+      console.error(`[${runId}] MALFORMED ISSUE missing ${missing.join(', ')}:`, JSON.stringify(issue))
+    }
+  }
 
   return {
     sessionId,

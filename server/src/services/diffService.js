@@ -95,6 +95,36 @@ function compareColors(figmaHex, domColor) {
   return null
 }
 
+// ---------------------------------------------------------------------------
+// Canonical issue builder (single source of truth)
+// ---------------------------------------------------------------------------
+
+function buildDescription(category, property, figmaValue, domValue, delta) {
+  if (category === 'color') {
+    return `${property}: design ${figmaValue}, build ${domValue}`
+  }
+  const d = delta ? ` (off by ${delta})` : ''
+  return `${property}: design ${figmaValue}, build ${domValue}${d}`
+}
+
+export function buildIssue({
+  property, figmaValue, domValue, delta,
+  category, severity, referencedElement
+}) {
+  return {
+    property,
+    figmaValue,
+    domValue,
+    delta: delta ?? null,
+    category,
+    severity,
+    referencedElement: referencedElement ?? null,
+    source: 'arithmetic',
+    description: buildDescription(category, property, figmaValue, domValue, delta),
+    suggestion: `Set ${property} to ${figmaValue} (currently ${domValue})`,
+  }
+}
+
 /**
  * Run a pixel-level diff between a Figma frame export and a developer screenshot.
  *
@@ -208,15 +238,14 @@ export function computePropertyDiff(match) {
       const colorDiff = compareColors(figmaColor, rawDomBg)
       if (colorDiff) {
         const domBgHex = rgbStringToHex(rawDomBg) ?? rawDomBg
-        issues.push({
-          property:   'backgroundColor',
+        issues.push(buildIssue({
+          property: 'backgroundColor',
           figmaValue: figmaColor,
-          domValue:   domBgHex,
-          delta:      colorDiff.delta,
-          description: `Background color: design ${figmaColor}, build ${domBgHex}`,
-          category:   'color',
-          severity:   colorDiff.severity,
-        })
+          domValue: domBgHex,
+          delta: colorDiff.delta,
+          category: 'color',
+          severity: colorDiff.severity,
+        }))
       }
     }
   }
@@ -227,14 +256,14 @@ export function computePropertyDiff(match) {
     const domFam = dom.styles.fontFamily.toLowerCase()
 
     if (!domFam.includes(figmaFam) && !figmaFam.includes(domFam.split(',')[0].trim())) {
-      issues.push({
+      issues.push(buildIssue({
         property: 'fontFamily',
         figmaValue: figma.fontFamily,
         domValue: dom.styles.fontFamily,
         delta: null,
         category: 'typography',
         severity: 'major',
-      })
+      }))
     }
   }
 
@@ -246,14 +275,14 @@ export function computePropertyDiff(match) {
     if (figmaSize != null && domSize != null) {
       const delta = Math.abs(figmaSize - domSize)
       if (delta > 2) {
-        issues.push({
+        issues.push(buildIssue({
           property: 'fontSize',
           figmaValue: `${figmaSize}px`,
           domValue: `${domSize}px`,
           delta: `${delta > 0 ? '+' : ''}${(domSize - figmaSize).toFixed(1)}px`,
           category: 'typography',
           severity: 'major',
-        })
+        }))
       }
     }
   }
@@ -266,23 +295,23 @@ export function computePropertyDiff(match) {
     if (figmaWeight != null && domWeight != null) {
       const delta = Math.abs(figmaWeight - domWeight)
       if (delta >= 100) {
-        issues.push({
+        issues.push(buildIssue({
           property: 'fontWeight',
           figmaValue: figmaWeight.toString(),
           domValue: domWeight.toString(),
           delta: `${delta}`,
           category: 'typography',
           severity: 'major',
-        })
+        }))
       } else if (delta > 0 && delta < 100) {
-        issues.push({
+        issues.push(buildIssue({
           property: 'fontWeight',
           figmaValue: figmaWeight.toString(),
           domValue: domWeight.toString(),
           delta: `${delta}`,
           category: 'typography',
           severity: 'minor',
-        })
+        }))
       }
     }
   }
@@ -333,23 +362,23 @@ export function computePropertyDiff(match) {
         if (Math.abs(delta) > 50) continue
 
         if (delta > 6) {
-          issues.push({
+          issues.push(buildIssue({
             property: figmaProp,
             figmaValue: `${figmaVal}px`,
             domValue: `${domVal}px`,
             delta: `${delta > 0 ? '+' : ''}${(domVal - figmaVal).toFixed(1)}px`,
             category: 'spacing',
             severity: 'major',
-          })
+          }))
         } else if (delta > 3) {
-          issues.push({
+          issues.push(buildIssue({
             property: figmaProp,
             figmaValue: `${figmaVal}px`,
             domValue: `${domVal}px`,
             delta: `${delta > 0 ? '+' : ''}${(domVal - figmaVal).toFixed(1)}px`,
             category: 'spacing',
             severity: 'minor',
-          })
+          }))
         }
       }
     }
@@ -377,23 +406,23 @@ export function computePropertyDiff(match) {
         if (Math.abs(delta) > 30) {
           // Skip this comparison; likely a mismatched element
         } else if (delta > 4) {
-        issues.push({
+        issues.push(buildIssue({
           property: 'borderRadius',
           figmaValue: `${figmaRadius}px`,
           domValue: `${domRadius}px`,
           delta: `${delta > 0 ? '+' : ''}${(domRadius - figmaRadius).toFixed(1)}px`,
           category: 'layout',
           severity: 'major',
-        })
+        }))
       } else if (delta > 2) {
-        issues.push({
+        issues.push(buildIssue({
           property: 'borderRadius',
           figmaValue: `${figmaRadius}px`,
           domValue: `${domRadius}px`,
           delta: `${delta > 0 ? '+' : ''}${(domRadius - figmaRadius).toFixed(1)}px`,
           category: 'layout',
           severity: 'minor',
-        })
+        }))
       }
       }
     }

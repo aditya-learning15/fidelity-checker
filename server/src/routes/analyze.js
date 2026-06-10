@@ -9,6 +9,7 @@ import { runFullAnalysis } from '../services/analysisService.js'
 import { matchElements, detectVirtualScrollComponents } from '../services/matchService.js'
 import { extractNamedElements } from '../services/tokenService.js'
 import { loadFeedbackPatterns, loadRawFeedback, clearAllFeedback } from '../services/feedbackService.js'
+import { buildIssue } from '../services/diffService.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FEEDBACK_FILE = path.join(__dirname, '../data/feedback.json')
@@ -255,20 +256,19 @@ router.post('/enrich', async (req, res) => {
       const boundingBox = buildDomBoundingBox(match.domNode, match.viewport)
 
       for (const diff of diffs) {
-        newIssues.push({
-          severity: diff.severity,
-          category: diff.category,
+        const issue = buildIssue({
           property: diff.property,
           figmaValue: diff.figmaValue,
           domValue: diff.domValue,
-          delta: diff.delta ?? null,
-          description: `${diff.property}: expected ${diff.figmaValue}, found ${diff.domValue}${diff.delta ? ' (' + diff.delta + ')' : ''}`,
-          location: match.figmaName,
-          suggestion: `Update ${diff.property} to ${diff.figmaValue}`,
+          delta: diff.delta,
+          category: diff.category,
+          severity: diff.severity,
           referencedElement: match.figmaName,
+        })
+        newIssues.push({
+          ...issue,
           boundingBox,
           confidence: match.confidence,
-          source: 'arithmetic',
           fromEnrich: true,
         })
       }

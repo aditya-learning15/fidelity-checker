@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from 'react'
+import { createContext, useContext, useState, useEffect } from 'react'
 import apiClient from './apiClient.js'
 
 const ReportContext = createContext(null)
@@ -64,6 +64,22 @@ export function ReportProvider({ children }) {
   const [figmaUrl, setFigmaUrl] = useState('')
   const [figmaToken, setFigmaToken] = useState('')
   const [overrides, setOverrides] = useState({})
+
+  // Log first issue received (Step 7 verification)
+  useEffect(() => {
+    if (report?.categories) {
+      let firstIssue = null
+      for (const data of Object.values(report.categories)) {
+        if (data.issues?.length > 0) {
+          firstIssue = data.issues[0]
+          break
+        }
+      }
+      if (firstIssue) {
+        console.log('[ReportContext] First issue received by UI:', JSON.stringify(firstIssue, null, 2))
+      }
+    }
+  }, [report])
 
   const setAnalysisInputs = (url, token) => {
     setFigmaUrl(url)
