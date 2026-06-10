@@ -500,7 +500,8 @@ export async function runFullAnalysis({ figmaBuffer, screenshotBuffer, figmaNode
         console.log(`[${runId}] ISSUE: element=${match.figmaName} | ` +
           `${diff.property} fig=${diff.figmaValue} dom=${diff.domValue}`)
 
-        const enriched = { ...diff, referencedElement: match.figmaName }
+        const boundingBox = buildDomBoundingBox(match.domNode, match.viewport)
+        const enriched = { ...diff, referencedElement: match.figmaName, boundingBox: boundingBox ?? undefined }
 
         categoriesAfterConfidence[cat] = {
           ...categoriesAfterConfidence[cat],

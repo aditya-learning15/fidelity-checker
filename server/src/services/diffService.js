@@ -400,7 +400,13 @@ export function computePropertyDiff(match) {
       // Extract first number from borderRadius (could be "4px" or "4px 4px 0 0", etc.)
       const domRadius = parseNumberValue(domRadiusStr.split(/\s+/)[0])
 
-      if (figmaRadius != null && domRadius != null) {
+      // Skip when DOM radius is 0 and Figma element is a container type (FRAME, INSTANCE, etc.)
+      // Radius is applied to a child element in the implementation, not the container — same
+      // delegation pattern as the container-padding skip above.
+      const FIGMA_CONTAINER_TYPES_R = new Set(['FRAME', 'INSTANCE', 'COMPONENT', 'GROUP', 'COMPONENT_SET'])
+      const skipRadiusDelegation = domRadius === 0 && FIGMA_CONTAINER_TYPES_R.has(figma.type)
+
+      if (figmaRadius != null && domRadius != null && !skipRadiusDelegation) {
         const delta = Math.abs(figmaRadius - domRadius)
         // Skip implausible deltas — likely a mismatched element pair
         if (Math.abs(delta) > 30) {
