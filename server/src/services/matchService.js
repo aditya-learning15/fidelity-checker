@@ -506,7 +506,7 @@ ${JSON.stringify(promptFigmaElements)}
 DOM nodes (use field "i" as the id to return):
 ${JSON.stringify(promptDomNodesIndexed)}
 
-Rules: match by text content first, then dimensions (w×h), then background color. One Figma element → at most one DOM node. Omit uncertain matches.
+Rules: match by text content first, then dimensions (w×h), then background color. Each Figma element must match at most ONE DOM node — the single best match only. Do not return multiple DOM nodes for the same Figma element name. Omit uncertain matches.
 
 Return:
 {"matches":[{"figmaName":"...","domIndex":0,"confidence":"high"|"medium"|"low","reasoning":"one sentence"}],"unmatched":["figmaName1"]}`
@@ -563,6 +563,7 @@ Return:
         figmaName:    m.figmaName,
         figmaElement,
         domNode,
+        domIndex:     m.domIndex,
         domPath:      domNode.path,   // full path from stored flatNode (not from prompt)
         confidence:   m.confidence,
         reasoning:    m.reasoning,
@@ -594,6 +595,28 @@ Return:
   })
 
   console.log(`[matchService] After confidence filter: ${matches.length} matches (threshold=${confidenceThreshold}, allowed=${JSON.stringify(allowedConfidence)})`)
+
+  // --- Dedup: one Figma element → one DOM node (keep highest confidence, tie-break by smallest domIndex) ---
+  const CONFIDENCE_RANK = { high: 0, medium: 1, low: 2 }
+  const seenFigmaNames = new Map()
+  for (const match of matches) {
+    const existing = seenFigmaNames.get(match.figmaName)
+    if (!existing) {
+      seenFigmaNames.set(match.figmaName, match)
+    } else {
+      const existingRank = CONFIDENCE_RANK[existing.confidence] ?? 99
+      const newRank = CONFIDENCE_RANK[match.confidence] ?? 99
+      if (newRank < existingRank || (newRank === existingRank && match.domIndex < existing.domIndex)) {
+        seenFigmaNames.set(match.figmaName, match)
+      }
+    }
+  }
+  const dedupDropped = matches.filter(m => seenFigmaNames.get(m.figmaName) !== m).map(m => m.figmaName)
+  if (dedupDropped.length) {
+    console.log(`[matchService] DEDUP dropped ${dedupDropped.length} duplicate figmaName(s): ${dedupDropped.join(', ')}`)
+  }
+  matches = [...seenFigmaNames.values()]
+  console.log(`[matchService] After dedup: ${matches.length} matches`)
 
   let unmatched = [
     ...(geminiResult.unmatched ?? []),
