@@ -527,12 +527,23 @@ Return:
   const figmaByName = new Map(figmaNamedElements.map(e => [e.name, e]))
 
   console.log(`[matchService] Gemini returned ${geminiResult.matches?.length ?? 0} matches, ${geminiResult.unmatched?.length ?? 0} unmatched`)
+  // Log every raw Gemini match before any filtering so we can diagnose drop-off
+  for (const m of (geminiResult.matches ?? [])) {
+    console.log(`[matchService] RAW match: figma="${m.figmaName}" domIndex=${m.domIndex} confidence=${m.confidence}`)
+  }
 
   let matches = (geminiResult.matches ?? [])
     .map(m => {
       const domNode      = flatNodes[m.domIndex]
       const figmaElement = figmaByName.get(m.figmaName)
-      if (!domNode || !figmaElement) return null   // bad index or unknown name — skip
+      if (!domNode) {
+        console.warn(`[matchService] DROP (bad index): figma="${m.figmaName}" domIndex=${m.domIndex} flatNodes.length=${flatNodes.length}`)
+        return null
+      }
+      if (!figmaElement) {
+        console.warn(`[matchService] DROP (unknown figmaName): "${m.figmaName}"`)
+        return null
+      }
 
       // Mark whether this node has real computed styles from bookmarklet
       const hasComputedStyles = !!(
@@ -560,6 +571,8 @@ Return:
     })
     .filter(Boolean)
 
+  console.log(`[matchService] After null-lookup filter: ${matches.length} matches`)
+
   // --- Filter matches by confidence threshold ---
   const thresholdFiltered = []
 
@@ -571,11 +584,14 @@ Return:
       }
       return true
     } else {
+      console.log(`[matchService] DROP (confidence="${match.confidence}" below threshold="${confidenceThreshold}"): "${match.figmaName}"`)
       // Track filtered-out matches to add to unmatched
       thresholdFiltered.push(match.figmaName)
       return false
     }
   })
+
+  console.log(`[matchService] After confidence filter: ${matches.length} matches (threshold=${confidenceThreshold}, allowed=${JSON.stringify(allowedConfidence)})`)
 
   let unmatched = [
     ...(geminiResult.unmatched ?? []),
