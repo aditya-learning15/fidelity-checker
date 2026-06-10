@@ -517,8 +517,10 @@ Return:
   try {
     geminiResult = await callGeminiWithRetry(prompt)
   } catch (err) {
-    console.warn('[matchService] Gemini element matching failed:', err.message)
-    return empty
+    // Do NOT swallow this — returning empty would produce a false-pass (0 issues, 100/100).
+    // Rethrow so the API route returns a 503 and the client shows an error state.
+    console.error('[matchService] Gemini element matching failed — propagating error:', err.message)
+    throw err
   }
 
   // --- Step 6 & 7: Enrich matches with full DOM node data ---

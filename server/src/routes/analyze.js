@@ -143,6 +143,9 @@ router.post('/', (req, res) => {
       if (msg.includes('AI comparison failed') || msg.includes('AI returned malformed')) {
         return res.status(502).json({ error: msg })
       }
+      if (msg.includes('Gemini is temporarily overloaded') || msg.includes('503') || msg.includes('Service Unavailable')) {
+        return res.status(503).json({ error: 'Gemini is temporarily unavailable. Please try again in a moment.' })
+      }
       if (msg.includes('Invalid image data')) {
         return res.status(400).json({ error: msg })
       }
